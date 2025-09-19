@@ -556,8 +556,8 @@ export function SalesEntryPage() {
                             type="number"
                             min="0"
                             step="0.01"
-                            value={item.quantity || ""}
-                            onChange={(e) => updateLineItem(item.id, 'quantity', parseFloat(e.target.value) || 0)}
+                            value={item.quantity.toString()}
+                            onChange={(e) => updateLineItem(item.id, 'quantity', e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
                             className={!validateStock(item) ? "border-red-500" : ""}
                           />
                           {!validateStock(item) && (
@@ -571,8 +571,8 @@ export function SalesEntryPage() {
                             type="number"
                             min="0"
                             step="0.01"
-                            value={item.sale_rate || ""}
-                            onChange={(e) => updateLineItem(item.id, 'sale_rate', parseFloat(e.target.value) || 0)}
+                            value={item.sale_rate.toString()}
+                            onChange={(e) => updateLineItem(item.id, 'sale_rate', e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
                           />
                         </TableCell>
                         <TableCell>
@@ -630,8 +630,8 @@ export function SalesEntryPage() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={quantityReturned || ""}
-                  onChange={(e) => setQuantityReturned(parseFloat(e.target.value) || 0)}
+                  value={quantityReturned.toString()}
+                  onChange={(e) => setQuantityReturned(e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
                 />
               </div>
 
@@ -641,8 +641,8 @@ export function SalesEntryPage() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={amountPaid || ""}
-                  onChange={(e) => setAmountPaid(parseFloat(e.target.value) || 0)}
+                  value={amountPaid.toString()}
+                  onChange={(e) => setAmountPaid(e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
                 />
               </div>
 
@@ -652,8 +652,8 @@ export function SalesEntryPage() {
                   type="number"
                   min="0"
                   step="0.01"
-                  value={lessDiscount || ""}
-                  onChange={(e) => setLessDiscount(parseFloat(e.target.value) || 0)}
+                  value={lessDiscount.toString()}
+                  onChange={(e) => setLessDiscount(e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
                 />
               </div>
             </div>
