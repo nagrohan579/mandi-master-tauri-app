@@ -8,7 +8,7 @@ export const addSupplierPayment = mutation({
     supplier_id: v.id("suppliers"),
     item_id: v.id("items"),
     amount_paid: v.number(),
-    quantity_returned: v.number(),
+    crates_returned: v.number(),
     notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -16,14 +16,14 @@ export const addSupplierPayment = mutation({
     const paymentId = await ctx.db.insert("supplier_payments", args);
 
     // Update supplier outstanding balance
-    await updateSupplierOutstanding(ctx, args.supplier_id, args.item_id, args.amount_paid, args.quantity_returned);
+    await updateSupplierOutstanding(ctx, args.supplier_id, args.item_id, args.amount_paid, args.crates_returned);
 
     return paymentId;
   },
 });
 
 // Helper function to update supplier outstanding
-async function updateSupplierOutstanding(ctx: any, supplier_id: string, item_id: string, amount_paid: number, quantity_returned: number) {
+async function updateSupplierOutstanding(ctx: any, supplier_id: string, item_id: string, amount_paid: number, crates_returned: number) {
   const currentDate = new Date().toISOString().split("T")[0];
 
   const existing = await ctx.db
@@ -33,7 +33,7 @@ async function updateSupplierOutstanding(ctx: any, supplier_id: string, item_id:
 
   if (existing) {
     const newPaymentDue = existing.payment_due - amount_paid;
-    const newQuantityDue = existing.quantity_due - quantity_returned;
+    const newQuantityDue = existing.quantity_due - crates_returned;
 
     await ctx.db.patch(existing._id, {
       payment_due: Math.max(0, newPaymentDue),
@@ -49,7 +49,7 @@ async function updateSupplierOutstanding(ctx: any, supplier_id: string, item_id:
 
     if (openingBalance) {
       const newPaymentDue = openingBalance.opening_payment_due - amount_paid;
-      const newQuantityDue = openingBalance.opening_quantity_due - quantity_returned;
+      const newQuantityDue = openingBalance.opening_quantity_due - crates_returned;
 
       await ctx.db.insert("supplier_outstanding", {
         supplier_id,
@@ -69,7 +69,7 @@ export const addSellerPayment = mutation({
     seller_id: v.id("sellers"),
     item_id: v.id("items"),
     amount_received: v.number(),
-    quantity_returned: v.number(),
+    crates_returned: v.number(),
     notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -77,14 +77,14 @@ export const addSellerPayment = mutation({
     const paymentId = await ctx.db.insert("seller_payments", args);
 
     // Update seller outstanding balance
-    await updateSellerOutstandingFromPayment(ctx, args.seller_id, args.item_id, args.amount_received, args.quantity_returned);
+    await updateSellerOutstandingFromPayment(ctx, args.seller_id, args.item_id, args.amount_received, args.crates_returned);
 
     return paymentId;
   },
 });
 
 // Helper function to update seller outstanding from payment
-async function updateSellerOutstandingFromPayment(ctx: any, seller_id: string, item_id: string, amount_received: number, quantity_returned: number) {
+async function updateSellerOutstandingFromPayment(ctx: any, seller_id: string, item_id: string, amount_received: number, crates_returned: number) {
   const currentDate = new Date().toISOString().split("T")[0];
 
   const existing = await ctx.db
@@ -94,7 +94,7 @@ async function updateSellerOutstandingFromPayment(ctx: any, seller_id: string, i
 
   if (existing) {
     const newPaymentDue = existing.payment_due - amount_received;
-    const newQuantityDue = existing.quantity_due - quantity_returned;
+    const newQuantityDue = existing.quantity_due - crates_returned;
 
     await ctx.db.patch(existing._id, {
       payment_due: Math.max(0, newPaymentDue),
@@ -110,7 +110,7 @@ async function updateSellerOutstandingFromPayment(ctx: any, seller_id: string, i
 
     if (openingBalance) {
       const newPaymentDue = openingBalance.opening_payment_due - amount_received;
-      const newQuantityDue = openingBalance.opening_quantity_due - quantity_returned;
+      const newQuantityDue = openingBalance.opening_quantity_due - crates_returned;
 
       await ctx.db.insert("seller_outstanding", {
         seller_id,

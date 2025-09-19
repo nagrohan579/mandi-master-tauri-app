@@ -186,7 +186,7 @@ export function UpdateEntriesPage() {
           entryId: editingEntry._id,
           amount_paid: editFormData.amount_paid,
           less_discount: editFormData.less_discount,
-          quantity_returned: editFormData.quantity_returned,
+          crates_returned: editFormData.crates_returned,
         });
       }
 

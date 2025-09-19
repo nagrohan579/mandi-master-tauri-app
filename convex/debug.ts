@@ -1,4 +1,4 @@
-import { query } from "./_generated/server";
+import { query, mutation } from "./_generated/server";
 
 // Simple debug queries to check if there's any data
 export const debugCheckTables = query({
@@ -32,5 +32,68 @@ export const debugCheckTables = query({
       console.error("Debug query error:", error);
       return { error: error.message };
     }
+  },
+});
+
+// DANGER: This will delete ALL data from ALL tables
+export const wipeAllData = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const tablesToWipe = [
+      "items",
+      "suppliers",
+      "sellers",
+      "seller_opening_balances",
+      "supplier_opening_balances",
+      "item_types",
+      "current_inventory", // NEW: Current stock table
+      "daily_inventory",
+      "procurement_sessions",
+      "procurement_entries",
+      "sales_sessions",
+      "sales_entries",
+      "sales_line_items",
+      "supplier_payments",
+      "seller_payments",
+      "seller_outstanding",
+      "supplier_outstanding",
+    ];
+
+    let totalDeleted = 0;
+    const deletionSummary: { [table: string]: number } = {};
+
+    console.log("🔥 STARTING DATA WIPE - This will delete EVERYTHING!");
+
+    for (const tableName of tablesToWipe) {
+      try {
+        console.log(`🗑️  Wiping table: ${tableName}`);
+
+        // Get all documents in the table
+        const documents = await ctx.db.query(tableName as any).collect();
+
+        // Delete each document
+        for (const doc of documents) {
+          await ctx.db.delete(doc._id);
+          totalDeleted++;
+        }
+
+        deletionSummary[tableName] = documents.length;
+        console.log(`✅ Deleted ${documents.length} records from ${tableName}`);
+      } catch (error) {
+        console.error(`❌ Error wiping table ${tableName}:`, error);
+        deletionSummary[tableName] = -1; // Mark as failed
+      }
+    }
+
+    console.log(`🎯 WIPE COMPLETE! Total records deleted: ${totalDeleted}`);
+    console.log("📊 Summary:", deletionSummary);
+
+    return {
+      success: true,
+      totalDeleted,
+      tablesWiped: tablesToWipe.length,
+      deletionSummary,
+      message: `Successfully wiped ${totalDeleted} records from ${tablesToWipe.length} tables`
+    };
   },
 });

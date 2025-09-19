@@ -58,6 +58,18 @@ export default defineSchema({
     .index("by_item", ["item_id"])
     .index("by_item_type", ["item_id", "type_name"]),
 
+  // Current real-time inventory (single source of truth)
+  current_inventory: defineTable({
+    item_id: v.id("items"),
+    type_name: v.string(),
+    current_stock: v.number(),
+    weighted_avg_rate: v.number(),
+    last_updated: v.string(),
+  })
+    .index("by_item", ["item_id"])
+    .index("by_item_type", ["item_id", "type_name"]),
+
+  // Historical daily inventory snapshots
   daily_inventory: defineTable({
     inventory_date: v.string(),
     item_id: v.id("items"),
@@ -107,7 +119,7 @@ export default defineSchema({
     item_id: v.id("items"),
     total_amount_purchased: v.number(),
     total_quantity_purchased: v.number(),
-    quantity_returned: v.number(),
+    crates_returned: v.number(),
     amount_paid: v.number(),
     less_discount: v.number(),
     final_quantity_outstanding: v.number(),
@@ -131,7 +143,7 @@ export default defineSchema({
     supplier_id: v.id("suppliers"),
     item_id: v.id("items"),
     amount_paid: v.number(),
-    quantity_returned: v.number(),
+    crates_returned: v.number(),
     notes: v.optional(v.string()),
   })
     .index("by_date", ["payment_date"])
@@ -143,7 +155,7 @@ export default defineSchema({
     seller_id: v.id("sellers"),
     item_id: v.id("items"),
     amount_received: v.number(),
-    quantity_returned: v.number(),
+    crates_returned: v.number(),
     notes: v.optional(v.string()),
   })
     .index("by_date", ["payment_date"])

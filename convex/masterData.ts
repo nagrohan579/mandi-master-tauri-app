@@ -116,3 +116,4 @@ export const updateSeller = mutation({
     return await ctx.db.patch(id, updates);
   },
 });
+

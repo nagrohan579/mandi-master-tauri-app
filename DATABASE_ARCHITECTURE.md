@@ -89,24 +89,102 @@ Customer/buyer information (fruit shop owners, etc.)
 - `by_item` on `["item_id"]`
 - `by_item_type` on `["item_id", "type_name"]`
 
+### `current_inventory` ⭐ **NEW - Primary Inventory Table**
+**Purpose:** Real-time current stock levels (single source of truth)
+- `id` (Id<"current_inventory">) - Unique identifier
+- `item_id` (Id<"items">) - Reference to item
+- `type_name` (string) - Type name ("Type X", "Type Y", etc.)
+- `current_stock` (number) - Real-time available stock
+- `weighted_avg_rate` (number) - Current weighted average purchase rate
+- `last_updated` (string) - Last modification timestamp
+
+**Key Benefits:**
+- **Instant stock lookup** - No backward searching required
+- **Always accurate** - Updated on every procurement/sale transaction
+- **High performance** - Single query to get current stock
+- **Real-time** - Reflects actual available inventory
+
+**Indexes:**
+- `by_item` on `["item_id"]`
+- `by_item_type` on `["item_id", "type_name"]`
+
 ### `daily_inventory`
-**Purpose:** Track available stock for each type each day (opening + new purchases - sales = closing)
+**Purpose:** Historical daily snapshots for reporting and audit trail
 - `id` (Id<"daily_inventory">) - Unique identifier
 - `inventory_date` (string) - Date (YYYY-MM-DD)
 - `item_id` (Id<"items">) - Reference to item
 - `type_name` (string) - Daily type name
-- `opening_stock` (number) - Stock carried forward from yesterday
+- `opening_stock` (number) - Stock at start of day
 - `purchased_today` (number) - New procurement today
 - `sold_today` (number) - Total sold to all customers
-- `closing_stock` (number) - Remaining stock for tomorrow (calculated)
-- `weighted_avg_purchase_rate` (number) - Blended rate of opening + today's purchase
+- `closing_stock` (number) - Stock at end of day
+- `weighted_avg_purchase_rate` (number) - Blended rate for the day
 
 **Calculation:** `closing_stock = opening_stock + purchased_today - sold_today`
+
+**Note:** This table is now used primarily for historical reporting and date-specific inventory lookups. Real-time stock queries use `current_inventory`.
 
 **Indexes:**
 - `by_date` on `["inventory_date"]`
 - `by_date_item` on `["inventory_date", "item_id"]`
 - `by_item_type` on `["item_id", "type_name"]`
+
+## **🔄 DUAL INVENTORY SYSTEM ARCHITECTURE**
+
+### **Real-Time vs Historical Inventory**
+
+The system now uses a **dual inventory approach** for optimal performance and accuracy:
+
+#### **1. Current Inventory (`current_inventory`) - Real-Time**
+- **Purpose**: Single source of truth for current available stock
+- **Updates**: Every procurement and sales transaction updates this table
+- **Usage**: Today's operations, real-time stock checking
+- **Performance**: Instant lookups, no date calculations needed
+
+#### **2. Daily Inventory (`daily_inventory`) - Historical**
+- **Purpose**: Historical snapshots and audit trail for specific dates
+- **Updates**: Maintained for historical record keeping
+- **Usage**: Past date operations, reporting, carry-forward calculations
+- **Performance**: Date-based queries for historical analysis
+
+### **Date-Aware Stock Lookup Logic**
+
+The `getAvailableStock` function implements intelligent date-aware inventory:
+
+```typescript
+if (requestedDate === today) {
+    // Use current_inventory for real-time accuracy
+    return getCurrentStock();
+} else if (requestedDate < today) {
+    // Use daily_inventory for historical accuracy
+    return getHistoricalStock() || getCarriedForwardStock();
+} else {
+    // Future dates show no stock
+    return [];
+}
+```
+
+### **Stock Update Flow**
+
+#### **On Procurement:**
+1. **Current Inventory**: Add to current_stock, update weighted_avg_rate
+2. **Daily Inventory**: Record daily procurement snapshot
+3. **Both tables maintained in sync**
+
+#### **On Sales:**
+1. **Current Inventory**: Subtract from current_stock
+2. **Daily Inventory**: Record daily sales snapshot
+3. **Real-time stock immediately updated**
+
+### **Inventory Query Behavior**
+
+| Date Type | Data Source | Behavior |
+|-----------|-------------|----------|
+| **Today** | `current_inventory` | Real-time current stock |
+| **Past Dates** | `daily_inventory` | Historical stock for that date |
+| **Before First Procurement** | Empty | Correctly shows no stock |
+| **Future Dates** | Empty | No stock available |
+| **Missing Historical Data** | Carry-forward | Searches backward up to 30 days |
 
 ## Procurement Tables
 
@@ -158,7 +236,7 @@ Customer/buyer information (fruit shop owners, etc.)
 - `item_id` (Id<"items">) - Reference to item
 - `total_amount_purchased` (number) - Sum of all line items for this sale
 - `total_quantity_purchased` (number) - Sum of all quantities for this sale
-- `quantity_returned` (number) - Crates/kg returned by seller
+- `crates_returned` (number) - Empty crates returned by seller
 - `amount_paid` (number) - Cash received from seller
 - `less_discount` (number) - Discount given to seller
 - `final_quantity_outstanding` (number) - **Calculated running balance INCLUDING opening balance**
@@ -166,7 +244,7 @@ Customer/buyer information (fruit shop owners, etc.)
 
 **Key Calculations:**
 ```
-final_quantity_outstanding = previous_outstanding + total_quantity_purchased - quantity_returned
+final_quantity_outstanding = previous_outstanding + total_quantity_purchased - crates_returned
 final_payment_outstanding = previous_outstanding + total_amount_purchased - amount_paid - less_discount
 ```
 
@@ -198,7 +276,7 @@ final_payment_outstanding = previous_outstanding + total_amount_purchased - amou
 - `supplier_id` (Id<"suppliers">) - Reference to supplier
 - `item_id` (Id<"items">) - Reference to item
 - `amount_paid` (number) - Amount paid to supplier
-- `quantity_returned` (number) - Crates returned to supplier
+- `crates_returned` (number) - Empty crates returned to supplier
 - `notes` (optional string) - Additional notes
 
 **Indexes:**
@@ -213,7 +291,7 @@ final_payment_outstanding = previous_outstanding + total_amount_purchased - amou
 - `seller_id` (Id<"sellers">) - Reference to seller
 - `item_id` (Id<"items">) - Reference to item
 - `amount_received` (number) - Amount received from seller
-- `quantity_returned` (number) - Crates returned by seller
+- `crates_returned` (number) - Empty crates returned by seller
 - `notes` (optional string) - Additional notes
 
 **Indexes:**
@@ -255,7 +333,7 @@ final_payment_outstanding = previous_outstanding + total_amount_purchased - amou
 For any person+item on any date:
 ```
 Final Outstanding Payment = Opening Balance + Sum(All Purchases) - Sum(All Payments) - Sum(All Discounts)
-Final Outstanding Quantity = Opening Quantity + Sum(All Quantities Bought) - Sum(All Quantities Returned)
+Final Outstanding Quantity = Opening Quantity + Sum(All Quantities Bought) - Sum(All Crates Returned)
 ```
 
 ### **Recalculation Triggers:**
@@ -272,7 +350,30 @@ When ANY of these events occur, ALL subsequent entries for the affected person+i
 ### **Type Management:**
 - Types are dynamic and created daily during procurement
 - Same type names across days refer to the same quality/grade
-- Types become inactive when no stock remains
+- Types become inactive when no stock remains in current_inventory
 - Weighted average rates calculated for carry-forward stock
 
-This database structure supports complete business operations with automatic recalculations, inventory tracking, and financial management for wholesale fruit/vegetable markets.
+### **🎯 KEY ARCHITECTURAL BENEFITS:**
+
+#### **Performance Improvements:**
+- **Instant Stock Lookups**: No backward searching for current inventory
+- **Date-Aware Queries**: Intelligent routing between current vs historical data
+- **Optimized Indexes**: Separate indexes for real-time vs historical operations
+
+#### **Data Accuracy:**
+- **Real-Time Current Stock**: Always reflects actual available inventory
+- **Historical Accuracy**: Past dates show correct stock for that specific date
+- **Temporal Consistency**: No anachronistic stock showing before procurement dates
+
+#### **Business Logic Compliance:**
+- **Date Validation**: Stock only shows when it actually existed
+- **Carry-Forward Logic**: Historical dates can inherit from previous days
+- **Future Date Handling**: Prevents impossible future stock scenarios
+
+This dual inventory architecture supports complete business operations with:
+- **Real-time accuracy** for current operations
+- **Historical precision** for past date analysis
+- **Automatic recalculations** for financial management
+- **Optimized performance** for wholesale fruit/vegetable markets
+
+The system now properly handles the fundamental business requirement that **inventory should only be available on or after the date it was actually procured**.

@@ -36,7 +36,7 @@ export const addSalesEntry = mutation({
       quantity: v.number(),
       sale_rate: v.number(),
     })),
-    quantity_returned: v.number(),
+    crates_returned: v.number(),
     amount_paid: v.number(),
     less_discount: v.number(),
   },
@@ -49,7 +49,7 @@ export const addSalesEntry = mutation({
     const previousOutstanding = await getPreviousOutstanding(ctx, args.seller_id, args.item_id);
 
     // Calculate new outstanding balances
-    const final_quantity_outstanding = previousOutstanding.quantity + total_quantity_purchased - args.quantity_returned;
+    const final_quantity_outstanding = previousOutstanding.quantity + total_quantity_purchased - args.crates_returned;
     const final_payment_outstanding = previousOutstanding.payment + total_amount_purchased - args.amount_paid - args.less_discount;
 
     // Create sales entry
@@ -59,7 +59,7 @@ export const addSalesEntry = mutation({
       item_id: args.item_id,
       total_amount_purchased,
       total_quantity_purchased,
-      quantity_returned: args.quantity_returned,
+      crates_returned: args.crates_returned,
       amount_paid: args.amount_paid,
       less_discount: args.less_discount,
       final_quantity_outstanding,
@@ -76,7 +76,10 @@ export const addSalesEntry = mutation({
         amount: lineItem.quantity * lineItem.sale_rate,
       });
 
-      // Update daily inventory (reduce sold_today)
+      // Update current inventory (real-time stock)
+      await updateCurrentInventoryForSale(ctx, args.item_id, lineItem.type_name, lineItem.quantity);
+
+      // Update daily inventory (historical record)
       await updateInventoryForSale(ctx, args.sales_session_id, args.item_id, lineItem.type_name, lineItem.quantity);
     }
 
@@ -94,6 +97,27 @@ export const addSalesEntry = mutation({
     return salesEntryId;
   },
 });
+
+// Helper function to update current inventory for sales
+async function updateCurrentInventoryForSale(ctx: any, item_id: string, type_name: string, quantity: number) {
+  const currentDate = new Date().toISOString().split("T")[0];
+
+  const existing = await ctx.db
+    .query("current_inventory")
+    .withIndex("by_item_type", (q) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .first();
+
+  if (existing) {
+    const newStock = Math.max(0, existing.current_stock - quantity);
+
+    await ctx.db.patch(existing._id, {
+      current_stock: newStock,
+      last_updated: currentDate,
+    });
+  }
+  // If no current inventory exists, this indicates a data inconsistency
+  // The frontend should validate stock availability before allowing sales
+}
 
 // Helper function to get previous outstanding balance
 async function getPreviousOutstanding(ctx: any, seller_id: string, item_id: string) {
@@ -150,6 +174,32 @@ async function updateSellerOutstanding(ctx: any, seller_id: string, item_id: str
   }
 }
 
+// Helper function to get opening stock by searching backwards for sales
+async function getOpeningStockForSales(ctx: any, date: string, item_id: string, type_name: string, maxDaysBack: number = 30) {
+  const targetDateTime = new Date(date);
+
+  for (let daysBack = 1; daysBack <= maxDaysBack; daysBack++) {
+    const checkDate = new Date(targetDateTime);
+    checkDate.setDate(checkDate.getDate() - daysBack);
+    const checkDateStr = checkDate.toISOString().split('T')[0];
+
+    const inventory = await ctx.db
+      .query("daily_inventory")
+      .withIndex("by_date_item", (q) => q.eq("inventory_date", checkDateStr).eq("item_id", item_id))
+      .filter((q) => q.eq(q.field("type_name"), type_name))
+      .first();
+
+    if (inventory && inventory.closing_stock > 0) {
+      return {
+        opening_stock: inventory.closing_stock,
+        opening_rate: inventory.weighted_avg_purchase_rate
+      };
+    }
+  }
+
+  return { opening_stock: 0, opening_rate: 0 };
+}
+
 // Helper function to update inventory for sales
 async function updateInventoryForSale(ctx: any, sales_session_id: string, item_id: string, type_name: string, quantity: number) {
   // Get session to find date
@@ -163,6 +213,7 @@ async function updateInventoryForSale(ctx: any, sales_session_id: string, item_i
     .first();
 
   if (existing) {
+    // Update existing inventory
     const newSold = existing.sold_today + quantity;
     const newClosing = existing.opening_stock + existing.purchased_today - newSold;
 
@@ -170,6 +221,25 @@ async function updateInventoryForSale(ctx: any, sales_session_id: string, item_i
       sold_today: newSold,
       closing_stock: Math.max(0, newClosing), // Prevent negative stock
     });
+  } else {
+    // No inventory exists for this date - create with carry-forward stock
+    const { opening_stock, opening_rate } = await getOpeningStockForSales(ctx, session.session_date, item_id, type_name);
+
+    if (opening_stock > 0) {
+      // Create inventory record with carried-forward opening stock
+      await ctx.db.insert("daily_inventory", {
+        inventory_date: session.session_date,
+        item_id,
+        type_name,
+        opening_stock,
+        purchased_today: 0,
+        sold_today: quantity,
+        closing_stock: Math.max(0, opening_stock - quantity),
+        weighted_avg_purchase_rate: opening_rate,
+      });
+    }
+    // If no opening stock found, we can't sell what we don't have
+    // This should be caught by validation in the frontend
   }
 }
 
@@ -246,17 +316,88 @@ export const getTodaysSales = query({
   },
 });
 
-// Get available stock for sales on a specific date and item
+// Get available stock for sales - date-aware inventory lookup
 export const getAvailableStock = query({
   args: {
     item_id: v.id("items"),
     date: v.string(),
   },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const today = new Date().toISOString().split('T')[0];
+    const requestedDate = args.date;
+
+    // For today's date, use current_inventory (real-time)
+    if (requestedDate === today) {
+      const currentStock = await ctx.db
+        .query("current_inventory")
+        .withIndex("by_item", (q) => q.eq("item_id", args.item_id))
+        .filter((q) => q.gt(q.field("current_stock"), 0))
+        .collect();
+
+      return currentStock.map(stock => ({
+        type_name: stock.type_name,
+        closing_stock: stock.current_stock,
+        weighted_avg_purchase_rate: stock.weighted_avg_rate,
+        is_carried_forward: false,
+        carried_from_date: args.date,
+        days_carried: 0
+      }));
+    }
+
+    // For past/future dates, use daily_inventory historical data
+    const historicalStock = await ctx.db
       .query("daily_inventory")
-      .withIndex("by_date_item", (q) => q.eq("inventory_date", args.date).eq("item_id", args.item_id))
+      .withIndex("by_date_item", (q) => q.eq("inventory_date", requestedDate).eq("item_id", args.item_id))
       .filter((q) => q.gt(q.field("closing_stock"), 0))
       .collect();
+
+    if (historicalStock.length > 0) {
+      return historicalStock.map(stock => ({
+        type_name: stock.type_name,
+        closing_stock: stock.closing_stock,
+        weighted_avg_purchase_rate: stock.weighted_avg_purchase_rate,
+        is_carried_forward: false,
+        carried_from_date: args.date,
+        days_carried: 0
+      }));
+    }
+
+    // If no exact date match, try carry-forward logic for past dates only
+    if (requestedDate < today) {
+      return await getCarriedForwardStock(ctx, args.item_id, requestedDate);
+    }
+
+    // Future dates or no stock available
+    return [];
   },
 });
+
+// Helper function for carry-forward stock lookup
+async function getCarriedForwardStock(ctx: any, item_id: string, date: string, maxDaysBack: number = 30) {
+  const targetDateTime = new Date(date);
+
+  for (let daysBack = 1; daysBack <= maxDaysBack; daysBack++) {
+    const checkDate = new Date(targetDateTime);
+    checkDate.setDate(checkDate.getDate() - daysBack);
+    const checkDateStr = checkDate.toISOString().split('T')[0];
+
+    const inventory = await ctx.db
+      .query("daily_inventory")
+      .withIndex("by_date_item", (q) => q.eq("inventory_date", checkDateStr).eq("item_id", item_id))
+      .filter((q) => q.gt(q.field("closing_stock"), 0))
+      .collect();
+
+    if (inventory.length > 0) {
+      return inventory.map(stock => ({
+        type_name: stock.type_name,
+        closing_stock: stock.closing_stock,
+        weighted_avg_purchase_rate: stock.weighted_avg_purchase_rate,
+        is_carried_forward: true,
+        carried_from_date: checkDateStr,
+        days_carried: daysBack
+      }));
+    }
+  }
+
+  return [];
+}

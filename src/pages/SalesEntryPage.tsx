@@ -31,7 +31,7 @@ interface PersonEntry {
   id: string;
   seller_id: string;
   lineItems: SalesLineItem[];
-  quantityReturned: number;
+  cratesReturned: number;
   amountPaid: number;
   lessDiscount: number;
   isCollapsed: boolean;
@@ -41,6 +41,9 @@ interface AvailableStock {
   type_name: string;
   closing_stock: number;
   weighted_avg_purchase_rate: number;
+  is_carried_forward?: boolean;
+  carried_from_date?: string;
+  days_carried?: number;
 }
 
 interface OutstandingBalance {
@@ -95,7 +98,7 @@ export function SalesEntryPage() {
       id: Date.now().toString(),
       seller_id: "",
       lineItems: [],
-      quantityReturned: 0,
+      cratesReturned: 0,
       amountPaid: 0,
       lessDiscount: 0,
       isCollapsed: false,
@@ -399,7 +402,7 @@ export function SalesEntryPage() {
             quantity: item.quantity,
             sale_rate: item.sale_rate,
           })),
-          quantity_returned: entry.quantityReturned,
+          crates_returned: entry.cratesReturned,
           amount_paid: entry.amountPaid,
           less_discount: entry.lessDiscount,
         });
@@ -523,10 +526,20 @@ export function SalesEntryPage() {
                             (was {stock.closing_stock})
                           </span>
                         )}
+                        {stock.is_carried_forward && (
+                          <span className="text-blue-600 text-xs">
+                            ↻ from {formatDateForIndia(stock.carried_from_date || "")}
+                          </span>
+                        )}
                       </div>
                     </div>
                     <div className="text-xs text-muted-foreground">
                       Rate: ₹{stock.weighted_avg_purchase_rate.toFixed(2)}
+                      {stock.is_carried_forward && stock.days_carried && (
+                        <span className="ml-1 text-blue-600">
+                          ({stock.days_carried} days ago)
+                        </span>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -581,11 +594,11 @@ export function SalesEntryPage() {
                   return (
                     <Collapsible key={entry.id} open={!entry.isCollapsed}>
                       <div className="border rounded-lg">
-                        <CollapsibleTrigger
-                          onClick={() => togglePersonCollapse(entry.id)}
-                          className="w-full p-4 flex items-center justify-between hover:bg-muted/50"
-                        >
-                          <div className="flex items-center gap-3">
+                        <div className="p-4 flex items-center justify-between hover:bg-muted/50">
+                          <CollapsibleTrigger
+                            onClick={() => togglePersonCollapse(entry.id)}
+                            className="flex-1 flex items-center gap-3 text-left"
+                          >
                             <span className="font-medium">Person {index + 1}</span>
                             {entry.seller_id && sellers && (
                               <span className="text-sm text-muted-foreground">
@@ -597,21 +610,20 @@ export function SalesEntryPage() {
                                 ₹{totals.totalAmount.toLocaleString()}
                               </Badge>
                             )}
-                          </div>
+                          </CollapsibleTrigger>
                           <div className="flex items-center gap-2">
                             <Button
                               size="sm"
                               variant="destructive"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removePersonEntry(entry.id);
-                              }}
+                              onClick={() => removePersonEntry(entry.id)}
                             >
                               <Trash2 className="w-4 h-4" />
                             </Button>
-                            {entry.isCollapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+                            <CollapsibleTrigger onClick={() => togglePersonCollapse(entry.id)}>
+                              {entry.isCollapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+                            </CollapsibleTrigger>
                           </div>
-                        </CollapsibleTrigger>
+                        </div>
 
                         <CollapsibleContent>
                           <div className="p-4 border-t space-y-4">
@@ -794,13 +806,13 @@ export function SalesEntryPage() {
                                   </div>
                                 </div>
                                 <div className="space-y-2">
-                                  <Label>Quantity Returned</Label>
+                                  <Label>Crates Returned</Label>
                                   <Input
                                     type="number"
                                     min="0"
                                     step="0.01"
-                                    value={entry.quantityReturned.toString()}
-                                    onChange={(e) => updatePersonEntry(entry.id, "quantityReturned", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
+                                    value={entry.cratesReturned.toString()}
+                                    onChange={(e) => updatePersonEntry(entry.id, "cratesReturned", e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
                                   />
                                 </div>
                                 <div className="space-y-2">

@@ -571,7 +571,7 @@ export const updateSalesEntry = mutation({
     entryId: v.id("sales_entries"),
     amount_paid: v.optional(v.number()),
     less_discount: v.optional(v.number()),
-    quantity_returned: v.optional(v.number()),
+    crates_returned: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     try {
@@ -586,11 +586,11 @@ export const updateSalesEntry = mutation({
       // Recalculate outstanding balances if payment details changed
       const newAmountPaid = updates.amount_paid ?? currentEntry.amount_paid;
       const newDiscount = updates.less_discount ?? currentEntry.less_discount;
-      const newQuantityReturned = updates.quantity_returned ?? currentEntry.quantity_returned;
+      const newCratesReturned = updates.crates_returned ?? currentEntry.crates_returned;
 
       // Calculate new outstanding balances
       const newPaymentOutstanding = currentEntry.total_amount_purchased - newAmountPaid - newDiscount;
-      const newQuantityOutstanding = currentEntry.total_quantity_purchased - newQuantityReturned;
+      const newQuantityOutstanding = currentEntry.total_quantity_purchased - newCratesReturned;
 
       // Update the entry
       await ctx.db.patch(entryId, {
@@ -927,18 +927,18 @@ async function recalculateSellerOutstanding(ctx: any, seller_id: string, item_id
   // Calculate totals
   const totalPurchases = salesEntries.reduce((sum, entry) => sum + entry.total_amount_purchased, 0);
   const totalQuantityPurchased = salesEntries.reduce((sum, entry) => sum + entry.total_quantity_purchased, 0);
-  const totalQuantityReturned = salesEntries.reduce((sum, entry) => sum + entry.quantity_returned, 0);
+  const totalCratesReturned = salesEntries.reduce((sum, entry) => sum + entry.crates_returned, 0);
   const totalPaid = salesEntries.reduce((sum, entry) => sum + entry.amount_paid, 0);
   const totalDiscount = salesEntries.reduce((sum, entry) => sum + entry.less_discount, 0);
   const totalPayments = payments.reduce((sum, payment) => sum + payment.amount_received, 0);
-  const totalPaymentReturns = payments.reduce((sum, payment) => sum + payment.quantity_returned, 0);
+  const totalCratesFromPayments = payments.reduce((sum, payment) => sum + payment.crates_returned, 0);
 
   // Calculate final outstanding amounts
   const openingPayment = openingBalance?.opening_payment_due || 0;
   const openingQuantity = openingBalance?.opening_quantity_due || 0;
 
   const finalPaymentDue = openingPayment + totalPurchases - totalPaid - totalDiscount - totalPayments;
-  const finalQuantityDue = openingQuantity + totalQuantityPurchased - totalQuantityReturned - totalPaymentReturns;
+  const finalQuantityDue = openingQuantity + totalQuantityPurchased - totalCratesReturned - totalCratesFromPayments;
 
   // Update or create seller outstanding record
   const currentDate = new Date().toISOString().split("T")[0];
@@ -1012,7 +1012,7 @@ async function recalculateSubsequentSalesBalances(ctx: any, seller_id: string, i
     for (const entry of sessionEntries) {
       if (!deletedEntryId || entry._id !== deletedEntryId) { // Skip the deleted entry if specified
         runningPaymentBalance += entry.total_amount_purchased - entry.amount_paid - entry.less_discount;
-        runningQuantityBalance += entry.total_quantity_purchased - entry.quantity_returned;
+        runningQuantityBalance += entry.total_quantity_purchased - entry.crates_returned;
       }
     }
   }
@@ -1032,7 +1032,7 @@ async function recalculateSubsequentSalesBalances(ctx: any, seller_id: string, i
 
     for (const entry of sessionEntries) {
       runningPaymentBalance += entry.total_amount_purchased - entry.amount_paid - entry.less_discount;
-      runningQuantityBalance += entry.total_quantity_purchased - entry.quantity_returned;
+      runningQuantityBalance += entry.total_quantity_purchased - entry.crates_returned;
 
       await ctx.db.patch(entry._id, {
         final_payment_outstanding: runningPaymentBalance,
@@ -1193,7 +1193,7 @@ export const deleteSupplierPayment = mutation({
         deletedPayment: {
           id: args.entryId,
           amount: payment.amount_paid,
-          quantity_returned: payment.quantity_returned
+          crates_returned: payment.crates_returned
         }
       };
 
@@ -1238,7 +1238,7 @@ export const deleteSellerPayment = mutation({
         deletedPayment: {
           id: args.entryId,
           amount: payment.amount_received,
-          quantity_returned: payment.quantity_returned
+          crates_returned: payment.crates_returned
         }
       };
 
@@ -1274,14 +1274,14 @@ async function recalculateSupplierOutstanding(ctx: any, supplier_id: string, ite
     const totalProcurement = relevantEntries.reduce((sum, entry) => sum + entry.total_amount, 0);
     const totalPaid = payments.reduce((sum, payment) => sum + payment.amount_paid, 0);
     const totalQuantityPurchased = relevantEntries.reduce((sum, entry) => sum + entry.quantity, 0);
-    const totalQuantityReturned = payments.reduce((sum, payment) => sum + payment.quantity_returned, 0);
+    const totalCratesReturned = payments.reduce((sum, payment) => sum + payment.crates_returned, 0);
 
     // Calculate final outstanding amounts (including opening balance)
     const openingPayment = openingBalance?.opening_payment_due || 0;
     const openingQuantity = openingBalance?.opening_quantity_due || 0;
 
     const finalPaymentDue = openingPayment + totalProcurement - totalPaid;
-    const finalQuantityDue = openingQuantity + totalQuantityPurchased - totalQuantityReturned;
+    const finalQuantityDue = openingQuantity + totalQuantityPurchased - totalCratesReturned;
 
     // Update or create supplier outstanding record
     const currentDate = new Date().toISOString().split("T")[0];
@@ -1489,7 +1489,7 @@ async function recalculateAllSellerTransactionsFromDate(ctx: any, seller_id: str
       // Update each entry with correct running balance
       for (const entry of salesEntries) {
         runningPaymentBalance += entry.total_amount_purchased - entry.amount_paid - entry.less_discount;
-        runningQuantityBalance += entry.total_quantity_purchased - entry.quantity_returned;
+        runningQuantityBalance += entry.total_quantity_purchased - entry.crates_returned;
 
         await ctx.db.patch(entry._id, {
           final_payment_outstanding: runningPaymentBalance,
@@ -1510,7 +1510,7 @@ async function recalculateAllSellerTransactionsFromDate(ctx: any, seller_id: str
       // Apply payments to running balance
       for (const payment of payments) {
         runningPaymentBalance -= payment.amount_received;
-        runningQuantityBalance -= payment.quantity_returned;
+        runningQuantityBalance -= payment.crates_returned;
       }
     }
 
@@ -1792,13 +1792,13 @@ async function calculateCorrectSellerOutstanding(ctx: any, seller_id: string, it
   const totalQuantityPurchased = salesEntries.reduce((sum, entry) => sum + entry.total_quantity_purchased, 0);
   const totalPaid = salesEntries.reduce((sum, entry) => sum + entry.amount_paid, 0);
   const totalDiscount = salesEntries.reduce((sum, entry) => sum + entry.less_discount, 0);
-  const totalQuantityReturned = salesEntries.reduce((sum, entry) => sum + entry.quantity_returned, 0);
+  const totalCratesReturned = salesEntries.reduce((sum, entry) => sum + entry.crates_returned, 0);
 
   const totalStandalonePayments = payments.reduce((sum, payment) => sum + payment.amount_received, 0);
-  const totalStandaloneReturns = payments.reduce((sum, payment) => sum + payment.quantity_returned, 0);
+  const totalStandaloneReturns = payments.reduce((sum, payment) => sum + payment.crates_returned, 0);
 
   const finalPayment = openingPayment + totalPurchases - totalPaid - totalDiscount - totalStandalonePayments;
-  const finalQuantity = openingQuantity + totalQuantityPurchased - totalQuantityReturned - totalStandaloneReturns;
+  const finalQuantity = openingQuantity + totalQuantityPurchased - totalCratesReturned - totalStandaloneReturns;
 
   return { payment: finalPayment, quantity: finalQuantity };
 }
@@ -1828,10 +1828,10 @@ async function calculateCorrectSupplierOutstanding(ctx: any, supplier_id: string
   const totalProcurement = procurementEntries.reduce((sum, entry) => sum + entry.total_amount, 0);
   const totalQuantityPurchased = procurementEntries.reduce((sum, entry) => sum + entry.quantity, 0);
   const totalPaid = payments.reduce((sum, payment) => sum + payment.amount_paid, 0);
-  const totalQuantityReturned = payments.reduce((sum, payment) => sum + payment.quantity_returned, 0);
+  const totalCratesReturned = payments.reduce((sum, payment) => sum + payment.crates_returned, 0);
 
   const finalPayment = openingPayment + totalProcurement - totalPaid;
-  const finalQuantity = openingQuantity + totalQuantityPurchased - totalQuantityReturned;
+  const finalQuantity = openingQuantity + totalQuantityPurchased - totalCratesReturned;
 
   return { payment: finalPayment, quantity: finalQuantity };
 }
@@ -1912,3 +1912,4 @@ export const deleteEntry = mutation({
     }
   },
 });
+

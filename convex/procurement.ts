@@ -55,12 +55,60 @@ export const addProcurementEntry = mutation({
     // Update/Create item type
     await updateItemType(ctx, args.item_id, args.type_name);
 
-    // Update daily inventory
+    // Update current inventory (real-time stock)
+    await updateCurrentInventory(ctx, args.item_id, args.type_name, args.quantity, args.rate, "purchase");
+
+    // Update daily inventory (historical record)
     await updateDailyInventory(ctx, session!.session_date, args.item_id, args.type_name, args.quantity, args.rate);
 
     return entryId;
   },
 });
+
+// Helper function to update current inventory (real-time stock)
+async function updateCurrentInventory(ctx: any, item_id: string, type_name: string, quantity: number, rate: number, operation: "purchase" | "sale") {
+  const currentDate = new Date().toISOString().split("T")[0];
+
+  const existing = await ctx.db
+    .query("current_inventory")
+    .withIndex("by_item_type", (q) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .first();
+
+  if (existing) {
+    // Update existing current inventory
+    let newStock: number;
+    let newWeightedAvgRate: number;
+
+    if (operation === "purchase") {
+      newStock = existing.current_stock + quantity;
+
+      // Calculate new weighted average rate
+      const totalValue = (existing.current_stock * existing.weighted_avg_rate) + (quantity * rate);
+      newWeightedAvgRate = newStock > 0 ? totalValue / newStock : rate;
+    } else {
+      // Sale operation
+      newStock = Math.max(0, existing.current_stock - quantity);
+      newWeightedAvgRate = existing.weighted_avg_rate; // Rate doesn't change on sale
+    }
+
+    await ctx.db.patch(existing._id, {
+      current_stock: newStock,
+      weighted_avg_rate: newWeightedAvgRate,
+      last_updated: currentDate,
+    });
+  } else {
+    // Create new current inventory record (only for purchases)
+    if (operation === "purchase") {
+      await ctx.db.insert("current_inventory", {
+        item_id,
+        type_name,
+        current_stock: quantity,
+        weighted_avg_rate: rate,
+        last_updated: currentDate,
+      });
+    }
+  }
+}
 
 // Helper function to update item types
 async function updateItemType(ctx: any, item_id: string, type_name: string) {
@@ -87,6 +135,32 @@ async function updateItemType(ctx: any, item_id: string, type_name: string) {
   }
 }
 
+// Helper function to get opening stock by searching backwards
+async function getOpeningStock(ctx: any, date: string, item_id: string, type_name: string, maxDaysBack: number = 30) {
+  const targetDateTime = new Date(date);
+
+  for (let daysBack = 1; daysBack <= maxDaysBack; daysBack++) {
+    const checkDate = new Date(targetDateTime);
+    checkDate.setDate(checkDate.getDate() - daysBack);
+    const checkDateStr = checkDate.toISOString().split('T')[0];
+
+    const inventory = await ctx.db
+      .query("daily_inventory")
+      .withIndex("by_date_item", (q) => q.eq("inventory_date", checkDateStr).eq("item_id", item_id))
+      .filter((q) => q.eq(q.field("type_name"), type_name))
+      .first();
+
+    if (inventory && inventory.closing_stock > 0) {
+      return {
+        opening_stock: inventory.closing_stock,
+        opening_rate: inventory.weighted_avg_purchase_rate
+      };
+    }
+  }
+
+  return { opening_stock: 0, opening_rate: 0 };
+}
+
 // Helper function to update daily inventory
 async function updateDailyInventory(ctx: any, date: string, item_id: string, type_name: string, quantity: number, rate: number) {
   const existing = await ctx.db
@@ -111,16 +185,24 @@ async function updateDailyInventory(ctx: any, date: string, item_id: string, typ
       weighted_avg_purchase_rate: newWeightedAvg,
     });
   } else {
+    // Get opening stock from previous days
+    const { opening_stock, opening_rate } = await getOpeningStock(ctx, date, item_id, type_name);
+
+    // Calculate weighted average rate with opening stock
+    const totalValue = (opening_stock * opening_rate) + (quantity * rate);
+    const totalQuantity = opening_stock + quantity;
+    const weightedAvgRate = totalQuantity > 0 ? totalValue / totalQuantity : rate;
+
     // Create new inventory record
     await ctx.db.insert("daily_inventory", {
       inventory_date: date,
       item_id,
       type_name,
-      opening_stock: 0, // TODO: Get from previous day's closing
+      opening_stock,
       purchased_today: quantity,
       sold_today: 0,
-      closing_stock: quantity,
-      weighted_avg_purchase_rate: rate,
+      closing_stock: opening_stock + quantity,
+      weighted_avg_purchase_rate: weightedAvgRate,
     });
   }
 }
