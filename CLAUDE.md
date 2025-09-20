@@ -155,3 +155,159 @@ All operations properly handle the critical cascade requirement: **when opening 
 ```
 
 **Applied to**: UpdateEntriesPage, DeleteEntriesPage, ItemsPage, SuppliersPage, SellersPage, and all future UI components that display dates.
+
+## Dual Inventory System Implementation
+
+### Complete Implementation Status ✅
+
+A **sophisticated dual inventory architecture** has been implemented that solves critical business logic issues with date-aware stock lookup and real-time accuracy.
+
+**✅ Core Problem Solved:**
+Fixed major bug where stock was incorrectly showing on dates before procurement actually occurred. The system now enforces: **"Inventory should only be available on or after the date it was actually procured"**.
+
+**✅ Dual Table Architecture:**
+- `current_inventory` - Real-time stock tracking with instant lookups for today's operations
+- `daily_inventory` - Historical snapshots for audit trail and date-specific queries
+
+**✅ Date-Aware Query Logic:**
+The `getAvailableStock` function in `convex/sales.ts` implements intelligent date routing:
+- **Today's Date**: Uses current_inventory for real-time accuracy
+- **Past Dates**: Uses daily_inventory for historical accuracy with carry-forward logic
+- **Future Dates**: Returns empty (no stock available)
+- **Before Procurement**: Correctly shows no stock
+
+**✅ Key Features:**
+- Instant stock lookups without backward searching
+- Historical accuracy for past dates
+- Temporal consistency preventing anachronistic stock
+- Both tables maintained in sync during procurement and sales
+
+**Implementation Files:**
+- `convex/schema.ts` - Added current_inventory table definition
+- `convex/procurement.ts` - Updated to maintain both current and daily inventory
+- `convex/sales.ts` - Completely rewrote getAvailableStock with date-aware logic
+- `DATABASE_ARCHITECTURE.md` - Comprehensive dual system documentation
+
+## Field Terminology Standardization
+
+### Complete Implementation Status ✅
+
+**✅ Comprehensive Rename Completed:**
+All `quantity_returned` references changed to `crates_returned` throughout entire codebase for semantic accuracy.
+
+**✅ Reasoning:**
+- **Crates Returned**: Specifically refers to empty crates being returned (physical containers)
+- **Quantity**: Refers to amount of produce (fruits/vegetables) being sold/purchased
+
+**✅ Files Updated:**
+- Database Schema: `convex/schema.ts` - All table definitions use `crates_returned`
+- Backend Functions: All mutations and queries use correct terminology
+- Frontend UI: All labels display "Crates Returned" instead of "Quantity Returned"
+- Documentation: DATABASE_ARCHITECTURE.md updated with correct terminology
+
+**✅ Verification Complete:**
+- Database schema uses `crates_returned` in sales_entries, supplier_payments, seller_payments
+- API functions use consistent `crates_returned` parameter
+- UI labels display correct terminology
+- Business logic calculations use proper field names
+
+## Multi-Person Sales Entry UI
+
+### Complete Implementation Status ✅
+
+**✅ UI Redesign Completed:**
+Transformed single-person workflow into efficient multi-person sales entry system with collapsible person sections.
+
+**✅ Key Features Implemented:**
+- **Collapsible Person Sections**: Each seller has expandable/collapsible section for clean UI
+- **Session-Level Item Selection**: Item selection moved to session level for better workflow
+- **Real-Time Stock Tracking**: Visual warnings and validation during entry
+- **Toast Notification System**: Top-center positioning with auto-dismiss after 3 seconds
+- **Real-Time Validation**: Prevents overselling with instant stock checking and visual indicators
+
+**Technical Implementation:**
+```typescript
+interface PersonEntry {
+  id: string;
+  seller_id: string;
+  lineItems: SalesLineItem[];
+  cratesReturned: number;
+  amountPaid: number;
+  lessDiscount: number;
+  isCollapsed: boolean;
+}
+```
+
+**Real-Time Features:**
+- Calculates remaining stock after all pending entries
+- Updates in real-time as user types quantities
+- Prevents submission if stock would go negative
+
+## Convex Backend Management
+
+### Production Deployment ✅
+
+**✅ Deployment Process Established:**
+Robust deployment pipeline for Convex backend functions with proper environment management.
+
+**Deployment Commands:**
+```bash
+# Production deployment with environment key
+CONVEX_DEPLOY_KEY="prod:lovely-hippopotamus-569|..." npx convex deploy
+
+# Function testing on production
+CONVEX_DEPLOY_KEY="..." npx convex run sales:getAvailableStock '{"item_id": "...", "date": "2024-01-01"}'
+```
+
+**Environment Configuration:**
+- Production URL: `https://lovely-hippopotamus-569.convex.cloud`
+- Local Config: `.env.local` contains deployment settings
+- TypeScript checking disabled for faster deployments (`--typecheck disable`)
+
+**✅ Best Practices:**
+- Direct production deployment for immediate updates
+- Function verification using command line testing
+- Environment separation between dev and production
+
+## Ledger Report Implementation
+
+### Complete Implementation Status ✅
+
+**✅ Seller Ledger Report System:**
+Comprehensive transaction history report for specific seller-item combinations with date filtering and expandable type details.
+
+**✅ Backend Implementation:**
+- **Function**: `getSalesLedger` in `convex/reports.ts`
+- **Query Logic**: Joins sales_entries + sales_line_items + sales_sessions + items/sellers
+- **Date Filtering**: Inclusive start/end date range with proper validation
+- **Conditional Logic**: Automatically determines crate column visibility based on item.quantity_type
+
+**✅ Frontend Implementation:**
+- **File**: `src/pages/LedgerReportPage.tsx`
+- **Route**: `/reports/ledger` (updated in `src/App.tsx`)
+- **UI Pattern**: Follows existing page structure with shadcn/ui components
+
+**✅ Key Features:**
+- **Search Filters**: Seller dropdown, Item dropdown, Start/End date pickers
+- **Expandable Table**: Click rows to show individual type breakdown
+- **Responsive Design**: Horizontal scrolling with minimum column widths
+- **Conditional Columns**: Crate-related columns only shown for relevant items
+- **Indian Date Format**: Uses `formatDateForIndia()` utility consistently
+- **Running Balances**: Displays cumulative outstanding amounts from database
+
+**✅ Table Structure:**
+```
+| Date | Type Details | Total Amount | Crates Returned* | Amount Paid | Less | Total Crates Due* | Total Amount Due |
+```
+*Crate columns conditionally shown
+
+**✅ Technical Challenges Resolved:**
+- **Table Layout Issues**: Removed `Collapsible` wrapper that was grouping all content under first column
+- **Column Squishing**: Added `overflow-x-auto` and minimum widths for proper display
+- **Expandable Functionality**: Used `React.Fragment` and conditional rendering instead of shadcn Collapsible
+- **Type Validation**: Fixed Convex type errors with proper Id casting and imports
+
+**✅ Data Flow:**
+- Users select seller/item/date range → Backend queries filtered sales data → Frontend displays with expandable type details
+- Real-time search with validation (start date ≤ end date)
+- Empty state handling for no results

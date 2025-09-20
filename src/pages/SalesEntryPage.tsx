@@ -46,11 +46,6 @@ interface AvailableStock {
   days_carried?: number;
 }
 
-interface OutstandingBalance {
-  payment_due: number;
-  quantity_due: number;
-  last_updated: string;
-}
 
 export function SalesEntryPage() {
   // State management

@@ -1,5 +1,6 @@
 import { query } from "./_generated/server";
 import { v } from "convex/values";
+import { Id } from "./_generated/dataModel";
 
 // Daily Dues Report
 export const getDailyDuesReport = query({
@@ -77,7 +78,7 @@ export const getStockReport = query({
 // Outstanding Summary Report
 export const getOutstandingSummary = query({
   args: {},
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const sellerOutstanding = await ctx.db.query("seller_outstanding").collect();
     const supplierOutstanding = await ctx.db.query("supplier_outstanding").collect();
 
@@ -173,18 +174,18 @@ export const getLedgerReport = query({
     end_date: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const ledgerEntries = [];
+    const ledgerEntries: any[] = [];
 
     if (args.entity_type === "seller") {
       // Get seller transactions
       const sales = await ctx.db
         .query("sales_entries")
-        .withIndex("by_seller", (q) => q.eq("seller_id", args.entity_id))
+        .withIndex("by_seller", (q) => q.eq("seller_id", args.entity_id as Id<"sellers">))
         .collect();
 
       const payments = await ctx.db
         .query("seller_payments")
-        .withIndex("by_seller", (q) => q.eq("seller_id", args.entity_id))
+        .withIndex("by_seller", (q) => q.eq("seller_id", args.entity_id as Id<"sellers">))
         .collect();
 
       // Combine and sort by date
@@ -217,7 +218,7 @@ export const getLedgerReport = query({
 
       const payments = await ctx.db
         .query("supplier_payments")
-        .withIndex("by_supplier", (q) => q.eq("supplier_id", args.entity_id))
+        .withIndex("by_supplier", (q) => q.eq("supplier_id", args.entity_id as Id<"suppliers">))
         .collect();
 
       // Similar processing for suppliers
@@ -271,6 +272,88 @@ export const getSellerOutstanding = query({
       payment_due: 0,
       quantity_due: 0,
       last_updated: new Date().toISOString().split("T")[0],
+    };
+  },
+});
+
+// Sales Ledger Report for specific seller and item
+export const getSalesLedger = query({
+  args: {
+    seller_id: v.id("sellers"),
+    item_id: v.id("items"),
+    start_date: v.string(),
+    end_date: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Get item details to determine if crates are relevant
+    const item = await ctx.db.get(args.item_id);
+    if (!item) {
+      throw new Error("Item not found");
+    }
+
+    // Get seller details
+    const seller = await ctx.db.get(args.seller_id);
+    if (!seller) {
+      throw new Error("Seller not found");
+    }
+
+    // Get all sales sessions in the date range
+    const allSalesSessions = await ctx.db.query("sales_sessions").collect();
+    const filteredSessions = allSalesSessions.filter(
+      (session: any) => session.session_date >= args.start_date && session.session_date <= args.end_date
+    );
+
+    const ledgerEntries = [];
+
+    // Process each session to find entries for this seller and item
+    for (const session of filteredSessions) {
+      const salesEntries = await ctx.db
+        .query("sales_entries")
+        .withIndex("by_session", (q) => q.eq("sales_session_id", session._id))
+        .filter((q) => q.eq(q.field("seller_id"), args.seller_id))
+        .filter((q) => q.eq(q.field("item_id"), args.item_id))
+        .collect();
+
+      for (const entry of salesEntries) {
+        // Get line items for type breakdown
+        const lineItems = await ctx.db
+          .query("sales_line_items")
+          .withIndex("by_sales_entry", (q) => q.eq("sales_entry_id", entry._id))
+          .collect();
+
+        ledgerEntries.push({
+          _id: entry._id,
+          session_date: session.session_date,
+          total_amount_purchased: entry.total_amount_purchased,
+          total_quantity_purchased: entry.total_quantity_purchased,
+          crates_returned: entry.crates_returned,
+          amount_paid: entry.amount_paid,
+          less_discount: entry.less_discount,
+          final_quantity_outstanding: entry.final_quantity_outstanding,
+          final_payment_outstanding: entry.final_payment_outstanding,
+          line_items: lineItems.map((item: any) => ({
+            type_name: item.type_name,
+            quantity: item.quantity,
+            sale_rate: item.sale_rate,
+            amount: item.amount,
+          })),
+        });
+      }
+    }
+
+    // Sort by date
+    ledgerEntries.sort((a: any, b: any) => a.session_date.localeCompare(b.session_date));
+
+    return {
+      seller_name: seller.name,
+      item_name: item.name,
+      item_unit: item.unit_name,
+      show_crates: item.quantity_type === "crates" || item.quantity_type === "mixed",
+      date_range: {
+        start_date: args.start_date,
+        end_date: args.end_date,
+      },
+      entries: ledgerEntries,
     };
   },
 });

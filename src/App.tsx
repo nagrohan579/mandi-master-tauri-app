@@ -9,6 +9,7 @@ import { SuppliersPage } from "./pages/SuppliersPage";
 import { ItemsPage } from "./pages/ItemsPage";
 import { UpdateEntriesPage } from "./pages/UpdateEntriesPage";
 import { DeleteEntriesPage } from "./pages/DeleteEntriesPage";
+import { LedgerReportPage } from "./pages/LedgerReportPage";
 import { Toaster } from "@/components/ui/toaster";
 
 function App() {
@@ -22,7 +23,7 @@ function App() {
           <Route path="stock-summary" element={<PlaceholderPage />} />
           <Route path="end-of-day" element={<PlaceholderPage />} />
           <Route path="reports/daily-dues" element={<PlaceholderPage />} />
-          <Route path="reports/ledger" element={<PlaceholderPage />} />
+          <Route path="reports/ledger" element={<LedgerReportPage />} />
           <Route path="reports/stock" element={<PlaceholderPage />} />
           <Route path="reports/outstanding" element={<PlaceholderPage />} />
           <Route path="reports/profit" element={<PlaceholderPage />} />
