@@ -349,3 +349,111 @@ Complementary report showing all seller transactions for a specific item on a sp
 - **Ledger Report**: One seller's history over time (seller-centric view)
 - **Daily Dues Report**: All sellers' activity for one item/date (item-centric daily view)
 - Both reports provide comprehensive transaction analysis from different perspectives
+
+## End of Day Implementation
+
+### Complete Implementation Status ✅
+
+**✅ End of Day System:**
+Comprehensive end-of-day reconciliation page for cash management, supplier settlements, and daily closure operations.
+
+**✅ Backend Implementation:**
+- **Function**: `getEndOfDayData` in `convex/reports.ts`
+- **Query Logic**: Aggregates seller totals and supplier dues for specific item and date
+- **Data Calculation**: Real-time summation of sales amounts, payments, and crate transactions
+
+**✅ Frontend Implementation:**
+- **File**: `src/pages/EndOfDayPage.tsx`
+- **Route**: `/end-of-day` (updated in `src/App.tsx`)
+- **UI Structure**: Item/date selectors, sales summary, multi-supplier settlement cards
+
+**✅ Key Features:**
+- **Sales Summary Dashboard**: Shows total amount sold, amount received, crates sold, crates received
+- **Multi-Supplier Settlement**: Individual settlement cards per supplier with outstanding dues
+- **Real-Time Calculations**: Aggregates all seller transactions for the selected item and date
+- **Supplier Payment Integration**: Uses existing `addSupplierPayment` function with auto-balance updates
+
+**✅ Sales Summary Metrics:**
+```
+- Total Amount Sold: Sum of all seller purchases for the item/date
+- Total Amount Received: Sum of all payments from sellers for the item/date
+- Total Crates Sold: Sum of all quantities sold to sellers
+- Total Crates Received: Sum of all crates returned by sellers
+```
+
+**✅ Supplier Settlement Process:**
+- Displays individual cards for each supplier with outstanding dues
+- Shows amount owed and crates owed per supplier
+- Input validation prevents overpayment and over-returning
+- Automatic outstanding balance updates after settlement
+- Toast notifications for success/error feedback
+
+**✅ Input Field Standardization:**
+- Applied zero-forcing logic from SalesEntryPage: `value === "" ? 0 : parseFloat(value) || 0`
+- Added `step="0.01"` for decimal support
+- Default display shows "0" instead of empty strings
+- Consistent behavior across all numeric inputs
+
+## Procurement System Enhancement
+
+### Supplier Outstanding Balance Integration ✅
+
+**✅ Critical Fix Implemented:**
+The procurement system was missing supplier outstanding balance updates, causing End of Day page to show no supplier dues despite active procurement.
+
+**✅ Problem Identified:**
+- Procurement entries only updated inventory tables
+- No creation/update of `supplier_outstanding` records
+- Suppliers weren't being tracked for amounts owed
+
+**✅ Solution Implemented:**
+- Added `updateSupplierOutstanding` function to `convex/procurement.ts`
+- Integrated function call in `addProcurementEntry` mutation
+- Proper accumulation of payment_due and quantity_due per supplier per item
+
+**✅ Updated Business Logic:**
+```typescript
+// During procurement entry
+await updateSupplierOutstanding(ctx, supplier_id, item_id, total_amount, quantity);
+
+// Creates/updates supplier_outstanding record:
+payment_due += procurement_amount
+quantity_due += procurement_quantity
+```
+
+**✅ Impact:**
+- End of Day page now correctly shows supplier dues after procurement
+- Supplier settlements work with real outstanding balances
+- Complete procurement-to-settlement workflow established
+
+## Input Field Pattern Standardization
+
+### Zero-Forcing Logic Implementation ✅
+
+**✅ Consistent Input Behavior:**
+Standardized numeric input handling across SalesEntryPage and EndOfDayPage to prevent empty/invalid values.
+
+**✅ Pattern Applied:**
+```typescript
+// Standard input onChange handler
+onChange={(e) => updateFunction(e.target.value === "" ? 0 : parseFloat(e.target.value) || 0)}
+
+// Input attributes
+<Input
+  type="number"
+  step="0.01"
+  value={stateValue || "0"}
+  onChange={handleChange}
+/>
+```
+
+**✅ Benefits:**
+- Always defaults to 0 for empty inputs
+- Handles invalid input gracefully
+- Prevents undefined/null state issues
+- Consistent user experience across forms
+- Decimal support with step="0.01"
+
+**✅ Applied to:**
+- SalesEntryPage: quantity, sale_rate, crates_returned, amount_paid, less_discount
+- EndOfDayPage: amount to pay, crates to return in supplier settlement forms

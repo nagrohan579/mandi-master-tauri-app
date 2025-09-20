@@ -440,3 +440,79 @@ export const getDailyDuesByItem = query({
     };
   },
 });
+
+// End of Day Report for specific item and date
+export const getEndOfDayData = query({
+  args: {
+    item_id: v.id("items"),
+    date: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Get item details to determine if crates are relevant
+    const item = await ctx.db.get(args.item_id);
+    if (!item) {
+      throw new Error("Item not found");
+    }
+
+    // Get sales session for the specific date
+    const salesSession = await ctx.db
+      .query("sales_sessions")
+      .withIndex("by_date", (q) => q.eq("session_date", args.date))
+      .first();
+
+    let sellerTotals = {
+      amount_sold: 0,
+      amount_received: 0,
+      total_crates_sold: 0,
+      total_crates_received: 0,
+    };
+
+    // Calculate seller totals if sales session exists
+    if (salesSession) {
+      const salesEntries = await ctx.db
+        .query("sales_entries")
+        .withIndex("by_session", (q) => q.eq("sales_session_id", salesSession._id))
+        .filter((q) => q.eq(q.field("item_id"), args.item_id))
+        .collect();
+
+      sellerTotals = salesEntries.reduce((totals, entry) => ({
+        amount_sold: totals.amount_sold + entry.total_amount_purchased,
+        amount_received: totals.amount_received + entry.amount_paid,
+        total_crates_sold: totals.total_crates_sold + entry.total_quantity_purchased,
+        total_crates_received: totals.total_crates_received + entry.crates_returned,
+      }), sellerTotals);
+    }
+
+    // Get all supplier outstanding balances for this item
+    const supplierOutstanding = await ctx.db
+      .query("supplier_outstanding")
+      .filter((q) => q.eq(q.field("item_id"), args.item_id))
+      .collect();
+
+    const supplierDues = [];
+    for (const outstanding of supplierOutstanding) {
+      // Only include suppliers with actual dues
+      if (outstanding.payment_due > 0 || outstanding.quantity_due > 0) {
+        const supplier = await ctx.db.get(outstanding.supplier_id);
+        if (supplier) {
+          supplierDues.push({
+            supplier_id: outstanding.supplier_id,
+            supplier_name: supplier.name,
+            payment_due: outstanding.payment_due,
+            quantity_due: outstanding.quantity_due,
+          });
+        }
+      }
+    }
+
+    return {
+      seller_totals: sellerTotals,
+      supplier_dues: supplierDues,
+      item_info: {
+        name: item.name,
+        unit: item.unit_name,
+        show_crates: item.quantity_type === "crates" || item.quantity_type === "mixed",
+      },
+    };
+  },
+});

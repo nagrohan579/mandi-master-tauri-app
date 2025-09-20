@@ -61,6 +61,9 @@ export const addProcurementEntry = mutation({
     // Update daily inventory (historical record)
     await updateDailyInventory(ctx, session!.session_date, args.item_id, args.type_name, args.quantity, args.rate);
 
+    // Update supplier outstanding balance
+    await updateSupplierOutstanding(ctx, args.supplier_id, args.item_id, total_amount, args.quantity);
+
     return entryId;
   },
 });
@@ -159,6 +162,34 @@ async function getOpeningStock(ctx: any, date: string, item_id: string, type_nam
   }
 
   return { opening_stock: 0, opening_rate: 0 };
+}
+
+// Helper function to update supplier outstanding balance
+async function updateSupplierOutstanding(ctx: any, supplier_id: string, item_id: string, amount_due: number, quantity_due: number) {
+  const currentDate = new Date().toISOString().split("T")[0];
+
+  const existing = await ctx.db
+    .query("supplier_outstanding")
+    .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+    .first();
+
+  if (existing) {
+    // Update existing outstanding balance
+    await ctx.db.patch(existing._id, {
+      payment_due: existing.payment_due + amount_due,
+      quantity_due: existing.quantity_due + quantity_due,
+      last_updated: currentDate,
+    });
+  } else {
+    // Create new outstanding balance record
+    await ctx.db.insert("supplier_outstanding", {
+      supplier_id,
+      item_id,
+      payment_due: amount_due,
+      quantity_due: quantity_due,
+      last_updated: currentDate,
+    });
+  }
 }
 
 // Helper function to update daily inventory
