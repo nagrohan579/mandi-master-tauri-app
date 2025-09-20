@@ -311,3 +311,41 @@ Comprehensive transaction history report for specific seller-item combinations w
 - Users select seller/item/date range → Backend queries filtered sales data → Frontend displays with expandable type details
 - Real-time search with validation (start date ≤ end date)
 - Empty state handling for no results
+
+## Daily Dues Report Implementation
+
+### Complete Implementation Status ✅
+
+**✅ Daily Dues Report System:**
+Complementary report showing all seller transactions for a specific item on a specific date, organized by seller name.
+
+**✅ Backend Implementation:**
+- **Function**: `getDailyDuesByItem` in `convex/reports.ts`
+- **Query Logic**: Filters by item_id and single date, joins same tables as ledger report
+- **Data Organization**: Groups by seller instead of date for daily analysis
+- **Naming**: Renamed to avoid conflict with existing `getDailyDuesReport` function
+
+**✅ Frontend Implementation:**
+- **File**: `src/pages/DailyDuesReportPage.tsx`
+- **Route**: `/reports/daily-dues` (updated in `src/App.tsx`)
+- **Search Interface**: Item dropdown + Single date picker (simpler than ledger)
+
+**✅ Table Structure Differences:**
+```
+| Seller Name | Type Details | Total Amount | Crates Returned* | Amount Paid | Less | Total Crates Due* | Total Amount Due |
+```
+- **First Column**: Seller names instead of dates
+- **Search Criteria**: Item + single date (instead of seller + date range)
+- **Use Case**: View daily activity across all sellers for specific item
+
+**✅ Reused Patterns:**
+- Same expandable table implementation (React.Fragment approach)
+- Same responsive design with horizontal scrolling
+- Same conditional column logic for crates
+- Same Indian date formatting and validation
+- Same shadcn/ui component structure
+
+**✅ Complementary Functionality:**
+- **Ledger Report**: One seller's history over time (seller-centric view)
+- **Daily Dues Report**: All sellers' activity for one item/date (item-centric daily view)
+- Both reports provide comprehensive transaction analysis from different perspectives

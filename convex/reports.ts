@@ -357,3 +357,86 @@ export const getSalesLedger = query({
     };
   },
 });
+
+// Daily Dues Report for specific item and date
+export const getDailyDuesByItem = query({
+  args: {
+    item_id: v.id("items"),
+    date: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Get item details to determine if crates are relevant
+    const item = await ctx.db.get(args.item_id);
+    if (!item) {
+      throw new Error("Item not found");
+    }
+
+    // Get sales session for the specific date
+    const salesSession = await ctx.db
+      .query("sales_sessions")
+      .withIndex("by_date", (q) => q.eq("session_date", args.date))
+      .first();
+
+    if (!salesSession) {
+      return {
+        item_name: item.name,
+        item_unit: item.unit_name,
+        show_crates: item.quantity_type === "crates" || item.quantity_type === "mixed",
+        date: args.date,
+        entries: [],
+      };
+    }
+
+    // Get all sales entries for this session and item
+    const salesEntries = await ctx.db
+      .query("sales_entries")
+      .withIndex("by_session", (q) => q.eq("sales_session_id", salesSession._id))
+      .filter((q) => q.eq(q.field("item_id"), args.item_id))
+      .collect();
+
+    const duesEntries = [];
+
+    // Process each sales entry
+    for (const entry of salesEntries) {
+      // Get seller details
+      const seller = await ctx.db.get(entry.seller_id);
+      if (!seller) continue;
+
+      // Get line items for type breakdown
+      const lineItems = await ctx.db
+        .query("sales_line_items")
+        .withIndex("by_sales_entry", (q) => q.eq("sales_entry_id", entry._id))
+        .collect();
+
+      duesEntries.push({
+        _id: entry._id,
+        seller_id: entry.seller_id,
+        seller_name: seller.name,
+        total_amount_purchased: entry.total_amount_purchased,
+        total_quantity_purchased: entry.total_quantity_purchased,
+        crates_returned: entry.crates_returned,
+        amount_paid: entry.amount_paid,
+        less_discount: entry.less_discount,
+        final_quantity_outstanding: entry.final_quantity_outstanding,
+        final_payment_outstanding: entry.final_payment_outstanding,
+        line_items: lineItems.map((item: any) => ({
+          type_name: item.type_name,
+          quantity: item.quantity,
+          sale_rate: item.sale_rate,
+          amount: item.amount,
+        })),
+      });
+    }
+
+    // Sort by seller name
+    duesEntries.sort((a: any, b: any) => a.seller_name.localeCompare(b.seller_name));
+
+    return {
+      item_name: item.name,
+      item_unit: item.unit_name,
+      show_crates: item.quantity_type === "crates" || item.quantity_type === "mixed",
+      date: args.date,
+      entries: duesEntries,
+    };
+  },
+});
