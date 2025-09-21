@@ -457,3 +457,71 @@ onChange={(e) => updateFunction(e.target.value === "" ? 0 : parseFloat(e.target.
 **✅ Applied to:**
 - SalesEntryPage: quantity, sale_rate, crates_returned, amount_paid, less_discount
 - EndOfDayPage: amount to pay, crates to return in supplier settlement forms
+
+## Supplier Ledger Report Implementation
+
+### Complete Implementation Status ✅
+
+**✅ Supplier Ledger Report System:**
+Comprehensive supplier transaction history report that provides complete visibility into procurement and settlement activities from the supplier perspective.
+
+**✅ Backend Implementation:**
+- **Function**: `getSupplierLedger` in `convex/reports.ts`
+- **Query Logic**: Joins procurement_sessions + procurement_entries + supplier_payments + suppliers/items
+- **Date Filtering**: Inclusive start/end date range with proper validation
+- **Settlement Detection**: Smart handling of missing vs zero settlement data using null values
+
+**✅ Frontend Implementation:**
+- **File**: `src/pages/SupplierLedgerReportPage.tsx`
+- **Route**: `/reports/supplier-ledger` (added to `src/App.tsx`)
+- **Navigation**: Added to Reports section in sidebar, positioned below "Ledger Report"
+
+**✅ Key Features:**
+- **Search Filters**: Supplier dropdown, Item dropdown, Start/End date pickers
+- **Expandable Table**: Click rows to show individual type breakdown with procurement details
+- **Descriptive Settlement Indicators**: Shows "No payment"/"No return" instead of zeros when no settlement occurred
+- **Responsive Design**: Optimal column widths (300px for Type Details) for proper content display
+- **Indian Date Format**: Uses `formatDateForIndia()` utility consistently
+
+**✅ Table Structure:**
+```
+| Date | Type Details | Total Amount | Crates Purchased* | Amount Paid | Crates Returned* |
+```
+*Crate columns conditionally shown based on item.quantity_type
+
+**✅ Settlement Data Logic:**
+```typescript
+// Backend: Uses null for missing settlement data
+amount_paid: supplierPayments.length > 0 ? totalAmountPaid : null
+crates_returned: supplierPayments.length > 0 ? totalCratesReturned : null
+
+// Frontend: Descriptive display
+{entry.amount_paid === null ? (
+  <span className="text-muted-foreground italic">No payment</span>
+) : (
+  <span>₹{entry.amount_paid.toLocaleString()}</span>
+)}
+```
+
+**✅ Navigation Integration:**
+- **Menu Item**: "Supplier Ledger" with Truck icon
+- **Position**: Reports section, below "Ledger Report"
+- **Route**: `/reports/supplier-ledger`
+
+**✅ Data Relationships:**
+- Procurement sessions filtered by date range
+- Procurement entries filtered by supplier + item
+- Supplier payments correlated by supplier_id + item_id + date
+- Type details from procurement entries for expandable breakdown
+
+**✅ Technical Advantages:**
+- **Optimal Column Layout**: 5-6 columns vs 7-8 in other reports, allowing wider Type Details column
+- **Clear Settlement Status**: Distinguishes between no settlement activity vs zero settlement amounts
+- **Consistent UI Patterns**: Reuses expandable table implementation from existing reports
+- **Performance Optimized**: Efficient queries with proper data aggregation
+
+**✅ Complementary Reporting:**
+- **Seller Ledger Report**: Customer transaction history over time
+- **Supplier Ledger Report**: Vendor transaction history with settlement tracking
+- **Daily Dues Report**: Daily activity view across all sellers for specific items
+- Complete reporting ecosystem covering all transaction perspectives

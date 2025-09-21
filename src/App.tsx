@@ -11,6 +11,7 @@ import { UpdateEntriesPage } from "./pages/UpdateEntriesPage";
 import { DeleteEntriesPage } from "./pages/DeleteEntriesPage";
 import { LedgerReportPage } from "./pages/LedgerReportPage";
 import { DailyDuesReportPage } from "./pages/DailyDuesReportPage";
+import { SupplierLedgerReportPage } from "./pages/SupplierLedgerReportPage";
 import { EndOfDayPage } from "./pages/EndOfDayPage";
 import { Toaster } from "@/components/ui/toaster";
 
@@ -26,6 +27,7 @@ function App() {
           <Route path="end-of-day" element={<EndOfDayPage />} />
           <Route path="reports/daily-dues" element={<DailyDuesReportPage />} />
           <Route path="reports/ledger" element={<LedgerReportPage />} />
+          <Route path="reports/supplier-ledger" element={<SupplierLedgerReportPage />} />
           <Route path="reports/stock" element={<PlaceholderPage />} />
           <Route path="reports/outstanding" element={<PlaceholderPage />} />
           <Route path="reports/profit" element={<PlaceholderPage />} />

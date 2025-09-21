@@ -516,3 +516,99 @@ export const getEndOfDayData = query({
     };
   },
 });
+
+// Supplier Ledger Report for specific supplier and item
+export const getSupplierLedger = query({
+  args: {
+    supplier_id: v.id("suppliers"),
+    item_id: v.id("items"),
+    start_date: v.string(),
+    end_date: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // Get item details to determine if crates are relevant
+    const item = await ctx.db.get(args.item_id);
+    if (!item) {
+      throw new Error("Item not found");
+    }
+
+    // Get supplier details
+    const supplier = await ctx.db.get(args.supplier_id);
+    if (!supplier) {
+      throw new Error("Supplier not found");
+    }
+
+    // Get all procurement sessions in the date range
+    const allProcurementSessions = await ctx.db.query("procurement_sessions").collect();
+    const filteredSessions = allProcurementSessions.filter(
+      (session: any) => session.session_date >= args.start_date && session.session_date <= args.end_date
+    );
+
+    const ledgerEntries = [];
+
+    // Process each session to find entries for this supplier and item
+    for (const session of filteredSessions) {
+      const procurementEntries = await ctx.db
+        .query("procurement_entries")
+        .withIndex("by_session", (q) => q.eq("procurement_session_id", session._id))
+        .filter((q) => q.eq(q.field("supplier_id"), args.supplier_id))
+        .filter((q) => q.eq(q.field("item_id"), args.item_id))
+        .collect();
+
+      // Get supplier payments for this date, supplier, and item
+      const supplierPayments = await ctx.db
+        .query("supplier_payments")
+        .withIndex("by_supplier_item", (q) => q.eq("supplier_id", args.supplier_id).eq("item_id", args.item_id))
+        .filter((q) => q.eq(q.field("payment_date"), session.session_date))
+        .collect();
+
+      // Calculate totals for this date
+      const dayProcurementAmount = procurementEntries.reduce((sum, entry) => sum + entry.total_amount, 0);
+      const dayProcurementQuantity = procurementEntries.reduce((sum, entry) => sum + entry.quantity, 0);
+
+      // Calculate settlement totals (use null if no payments)
+      const dayAmountPaid = supplierPayments.length > 0
+        ? supplierPayments.reduce((sum, payment) => sum + payment.amount_paid, 0)
+        : null;
+      const dayCratesReturned = supplierPayments.length > 0
+        ? supplierPayments.reduce((sum, payment) => sum + payment.crates_returned, 0)
+        : null;
+
+      // Only include dates where there was procurement activity
+      if (procurementEntries.length > 0) {
+        // Collect type details
+        const typeDetails = procurementEntries.map((entry: any) => ({
+          type_name: entry.type_name,
+          quantity: entry.quantity,
+          rate: entry.rate,
+          amount: entry.total_amount,
+        }));
+
+        ledgerEntries.push({
+          _id: session._id,
+          session_date: session.session_date,
+          procurement_amount: dayProcurementAmount,
+          procurement_quantity: dayProcurementQuantity,
+          amount_paid: dayAmountPaid,
+          crates_returned: dayCratesReturned,
+          type_details: typeDetails,
+        });
+      }
+    }
+
+    // Sort by date
+    ledgerEntries.sort((a: any, b: any) => a.session_date.localeCompare(b.session_date));
+
+    return {
+      supplier_name: supplier.name,
+      item_name: item.name,
+      item_unit: item.unit_name,
+      show_crates: item.quantity_type === "crates" || item.quantity_type === "mixed",
+      date_range: {
+        start_date: args.start_date,
+        end_date: args.end_date,
+      },
+      entries: ledgerEntries,
+    };
+  },
+});

@@ -10,6 +10,7 @@ import {
   BarChart3,
   FileBarChart,
   BookOpen,
+  Truck,
   TrendingUp,
   AlertTriangle,
   Settings,
@@ -58,6 +59,7 @@ const navigationItems: NavigationItem[] = [
     children: [
       { id: "daily-dues", label: "Daily Dues Report", icon: FileBarChart, path: "/reports/daily-dues" },
       { id: "ledger", label: "Ledger Report", icon: BookOpen, path: "/reports/ledger" },
+      { id: "supplier-ledger", label: "Supplier Ledger", icon: Truck, path: "/reports/supplier-ledger" },
       { id: "stock-report", label: "Stock Report", icon: TrendingUp, path: "/reports/stock" },
       { id: "outstanding", label: "Outstanding Summary", icon: AlertTriangle, path: "/reports/outstanding" },
       { id: "profit", label: "Profit Analysis", icon: TrendingUp, path: "/reports/profit" },
