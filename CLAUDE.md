@@ -525,3 +525,57 @@ crates_returned: supplierPayments.length > 0 ? totalCratesReturned : null
 - **Supplier Ledger Report**: Vendor transaction history with settlement tracking
 - **Daily Dues Report**: Daily activity view across all sellers for specific items
 - Complete reporting ecosystem covering all transaction perspectives
+
+## Damage Management System Implementation
+
+### Complete Implementation Status ✅
+
+**✅ Damage Management System:**
+Comprehensive damage tracking system integrated into End of Day workflow for handling damaged items, supplier returns, and discount negotiations.
+
+**✅ Database Schema:**
+- **Table**: `damage_entries` in `convex/schema.ts`
+- **Fields**: `damage_date`, `supplier_id`, `item_id`, `type_name`, `damaged_quantity`, `damaged_returned_quantity`, `supplier_discount_amount`
+- **Indexes**: by_date, by_supplier, by_supplier_item, by_date_supplier
+
+**✅ Business Logic:**
+```typescript
+// Three simple damage states:
+damaged_quantity: Total items found damaged
+damaged_returned_quantity: Items returned to supplier (reduces inventory)
+supplier_discount_amount: Supplier compensation for damage
+```
+
+**✅ Backend Implementation:**
+- **File**: `convex/damageManagement.ts`
+- **Key Function**: `recordDamageEntry` - Processes damage with inventory and outstanding updates
+- **Validation**: `damaged_returned_quantity ≤ damaged_quantity`
+- **Inventory Impact**: Only returned quantities reduce current stock
+- **Financial Impact**: Discount amounts reduce supplier outstanding balances
+
+**✅ End of Day Integration:**
+- **Optional Toggle**: Checkbox in Sales Summary header to show/hide damage assessment section
+- **Default State**: Hidden to keep interface clean
+- **Workflow**: Sales Summary → [Optional Damage Assessment] → Supplier Settlement
+- **Form Fields**: Supplier dropdown, Type dropdown, Damaged quantity, Returned quantity, Discount amount
+
+**✅ Supplier Ledger Report Enhancement:**
+- **New Columns**: Damaged | Returned | Discount (with compact spacing)
+- **Color Coding**: Orange for damaged, Red for returned, Green for discounts
+- **Empty State Display**: "None" (italic) instead of dashes for clean appearance
+- **Expandable Details**: Shows damage breakdown per type with warning indicators
+- **Responsive Design**: Optimized column widths and padding for table fit
+
+**✅ Key Features:**
+- **Simplified Workflow**: Just 3 damage fields instead of complex multi-state tracking
+- **Inventory Accuracy**: Only returned items reduce stock, damaged items stay sellable
+- **Financial Integration**: Automatic supplier outstanding balance adjustments
+- **Optional Usage**: Damage assessment only appears when checkbox is enabled
+- **Historical Tracking**: Complete audit trail of all damage activities
+- **Real-time Validation**: Prevents invalid damage entries with proper constraints
+
+**✅ UI Optimizations:**
+- **Table Compaction**: Reduced column widths and padding for better screen fit
+- **Header Abbreviations**: Shortened column names while maintaining clarity
+- **Text Sizing**: Smaller fonts and icons for compact display
+- **Empty State Consistency**: "None" display across all empty fields

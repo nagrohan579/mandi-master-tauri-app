@@ -182,4 +182,19 @@ export default defineSchema({
   })
     .index("by_supplier", ["supplier_id"])
     .index("by_supplier_item", ["supplier_id", "item_id"]),
+
+  // Damage Management Table
+  damage_entries: defineTable({
+    damage_date: v.string(),
+    supplier_id: v.id("suppliers"),
+    item_id: v.id("items"),
+    type_name: v.string(),
+    damaged_quantity: v.number(),
+    damaged_returned_quantity: v.number(),
+    supplier_discount_amount: v.number(),
+  })
+    .index("by_date", ["damage_date"])
+    .index("by_supplier", ["supplier_id"])
+    .index("by_supplier_item", ["supplier_id", "item_id"])
+    .index("by_date_supplier", ["damage_date", "supplier_id"]),
 });

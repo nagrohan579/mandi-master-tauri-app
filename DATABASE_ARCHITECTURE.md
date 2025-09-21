@@ -212,8 +212,8 @@ if (requestedDate === today) {
 
 **Indexes:**
 - `by_session` on `["procurement_session_id"]`
-- `by_date_supplier` on `["session_date", "supplier_id"]`
-- `by_date_item` on `["session_date", "item_id"]`
+- `by_date_supplier` on `["procurement_session_id", "supplier_id"]`
+- `by_date_item` on `["procurement_session_id", "item_id"]`
 
 ## Sales Tables
 
@@ -326,6 +326,49 @@ final_payment_outstanding = previous_outstanding + total_amount_purchased - amou
 **Indexes:**
 - `by_supplier` on `["supplier_id"]`
 - `by_supplier_item` on `["supplier_id", "item_id"]`
+
+## Damage Management Tables
+
+### `damage_entries`
+**Purpose:** Track damaged items found during end-of-day review with supplier returns and discounts
+- `id` (Id<"damage_entries">) - Unique identifier
+- `damage_date` (string) - Date damage was discovered (YYYY-MM-DD)
+- `supplier_id` (Id<"suppliers">) - Reference to supplier whose items were damaged
+- `item_id` (Id<"items">) - Reference to damaged item
+- `type_name` (string) - Specific type that was damaged ("Type X", "Type Y")
+- `damaged_quantity` (number) - Total quantity found damaged
+- `damaged_returned_quantity` (number) - Quantity returned to supplier (reduces inventory)
+- `supplier_discount_amount` (number) - Discount given by supplier for damage compensation
+
+**Business Logic:**
+- **Inventory Impact:** Only `damaged_returned_quantity` reduces current stock
+- **Financial Impact:** `supplier_discount_amount` reduces supplier outstanding balance
+- **Validation:** `damaged_returned_quantity ≤ damaged_quantity`
+- **Workflow:** Integrated into End of Day process (optional toggle)
+
+**Key Concepts:**
+- **Damaged Items:** Can still be sold, just noted for supplier negotiation
+- **Returned Items:** Actually removed from inventory and returned to supplier
+- **Supplier Discount:** Financial compensation for accepting damaged goods
+
+**Example Workflow:**
+```
+Found 10 damaged tomato crates (Type X):
+- damaged_quantity: 10 (total damaged)
+- damaged_returned_quantity: 3 (returned to supplier)
+- supplier_discount_amount: 150 (₹50/crate discount)
+
+Result:
+- 7 damaged crates remain in sellable inventory
+- 3 crates removed from current_inventory
+- Supplier outstanding reduced by ₹150
+```
+
+**Indexes:**
+- `by_date` on `["damage_date"]`
+- `by_supplier` on `["supplier_id"]`
+- `by_supplier_item` on `["supplier_id", "item_id"]`
+- `by_date_supplier` on `["damage_date", "supplier_id"]`
 
 ## Critical Business Logic
 

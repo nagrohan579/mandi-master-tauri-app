@@ -20,11 +20,20 @@ interface LedgerEntry {
   procurement_quantity: number;
   amount_paid: number | null;
   crates_returned: number | null;
+  damaged_quantity: number;
+  damage_returned_quantity: number;
+  damage_discount_amount: number;
   type_details: Array<{
     type_name: string;
     quantity: number;
     rate: number;
     amount: number;
+  }>;
+  damage_details: Array<{
+    type_name: string;
+    damaged: number;
+    returned: number;
+    discount: number;
   }>;
 }
 
@@ -224,12 +233,15 @@ export function SupplierLedgerReportPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="min-w-[100px]">Date</TableHead>
-                      <TableHead className="min-w-[200px]">Type Details</TableHead>
-                      <TableHead className="text-right min-w-[120px]">Total Amount</TableHead>
-                      {ledgerData.show_crates && <TableHead className="text-right min-w-[120px]">Crates Purchased</TableHead>}
-                      <TableHead className="text-right min-w-[120px]">Amount Paid</TableHead>
-                      {ledgerData.show_crates && <TableHead className="text-right min-w-[120px]">Crates Returned</TableHead>}
+                      <TableHead className="min-w-[80px]">Date</TableHead>
+                      <TableHead className="min-w-[150px]">Type Details</TableHead>
+                      <TableHead className="text-right min-w-[90px]">Amount</TableHead>
+                      {ledgerData.show_crates && <TableHead className="text-right min-w-[80px]">Crates</TableHead>}
+                      <TableHead className="text-right min-w-[70px]">Damaged</TableHead>
+                      <TableHead className="text-right min-w-[70px]">Returned</TableHead>
+                      <TableHead className="text-right min-w-[80px]">Discount</TableHead>
+                      <TableHead className="text-right min-w-[90px]">Paid</TableHead>
+                      {ledgerData.show_crates && <TableHead className="text-right min-w-[80px]">Crt.Ret</TableHead>}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -237,38 +249,59 @@ export function SupplierLedgerReportPage() {
                       <React.Fragment key={entry._id}>
                         {/* Main Row */}
                         <TableRow className="group cursor-pointer hover:bg-muted/50" onClick={() => toggleRowExpansion(entry._id)}>
-                          <TableCell className="font-medium min-w-[100px]">
+                          <TableCell className="font-medium min-w-[80px] p-2">
                             {formatDateForIndia(entry.session_date)}
                           </TableCell>
-                          <TableCell className="min-w-[200px]">
-                            <div className="flex items-center gap-2">
-                              <span>{formatTypeDetails(entry.type_details)}</span>
+                          <TableCell className="min-w-[150px] p-2">
+                            <div className="flex items-center gap-1">
+                              <span className="text-sm">{formatTypeDetails(entry.type_details)}</span>
                               {expandedRows.has(entry._id) ? (
-                                <ChevronUp className="w-4 h-4" />
+                                <ChevronUp className="w-3 h-3" />
                               ) : (
-                                <ChevronDown className="w-4 h-4" />
+                                <ChevronDown className="w-3 h-3" />
                               )}
                             </div>
                           </TableCell>
-                          <TableCell className="text-right font-medium min-w-[120px]">
+                          <TableCell className="text-right font-medium min-w-[90px] p-2 text-sm">
                             ₹{entry.procurement_amount.toLocaleString()}
                           </TableCell>
                           {ledgerData.show_crates && (
-                            <TableCell className="text-right min-w-[120px]">
+                            <TableCell className="text-right min-w-[80px] p-2 text-sm">
                               {entry.procurement_quantity.toLocaleString()}
                             </TableCell>
                           )}
-                          <TableCell className="text-right min-w-[120px]">
+                          <TableCell className="text-right min-w-[70px] p-2 text-sm">
+                            {entry.damaged_quantity > 0 ? (
+                              <span className="text-orange-600 font-medium">{entry.damaged_quantity}</span>
+                            ) : (
+                              <span className="text-muted-foreground italic">None</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right min-w-[70px] p-2 text-sm">
+                            {entry.damage_returned_quantity > 0 ? (
+                              <span className="text-red-600 font-medium">{entry.damage_returned_quantity}</span>
+                            ) : (
+                              <span className="text-muted-foreground italic">None</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right min-w-[80px] p-2 text-sm">
+                            {entry.damage_discount_amount > 0 ? (
+                              <span className="text-green-600 font-medium">₹{entry.damage_discount_amount.toLocaleString()}</span>
+                            ) : (
+                              <span className="text-muted-foreground italic">None</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right min-w-[90px] p-2 text-sm">
                             {entry.amount_paid === null ? (
-                              <span className="text-muted-foreground italic">No payment</span>
+                              <span className="text-muted-foreground italic">None</span>
                             ) : (
                               <span>₹{entry.amount_paid.toLocaleString()}</span>
                             )}
                           </TableCell>
                           {ledgerData.show_crates && (
-                            <TableCell className="text-right min-w-[120px]">
+                            <TableCell className="text-right min-w-[80px] p-2 text-sm">
                               {entry.crates_returned === null ? (
-                                <span className="text-muted-foreground italic">No return</span>
+                                <span className="text-muted-foreground italic">None</span>
                               ) : (
                                 <span>{entry.crates_returned.toLocaleString()}</span>
                               )}
@@ -278,23 +311,51 @@ export function SupplierLedgerReportPage() {
 
                         {/* Expanded Type Details */}
                         {expandedRows.has(entry._id) && entry.type_details.map((item, index) => (
-                          <TableRow key={`${entry._id}-${index}`} className="bg-muted/20">
-                            <TableCell className="min-w-[100px]"></TableCell>
-                            <TableCell className="pl-8 min-w-[200px]">
-                              <div className="flex items-center gap-2">
-                                <span className="text-muted-foreground">→</span>
+                          <TableRow key={`${entry._id}-type-${index}`} className="bg-muted/20">
+                            <TableCell className="min-w-[80px] p-2"></TableCell>
+                            <TableCell className="pl-6 min-w-[150px] p-2">
+                              <div className="flex items-center gap-1">
+                                <span className="text-muted-foreground text-xs">→</span>
                                 <Badge variant="outline" className="text-xs">
                                   {item.type_name}
                                 </Badge>
-                                <span className="text-sm">
-                                  {item.quantity} @ ₹{item.rate.toFixed(2)} = ₹{item.amount.toFixed(2)}
+                                <span className="text-xs">
+                                  {item.quantity} @ ₹{item.rate.toFixed(2)}
                                 </span>
                               </div>
                             </TableCell>
-                            <TableCell className="min-w-[120px]"></TableCell>
-                            {ledgerData.show_crates && <TableCell className="min-w-[120px]"></TableCell>}
-                            <TableCell className="min-w-[120px]"></TableCell>
-                            {ledgerData.show_crates && <TableCell className="min-w-[120px]"></TableCell>}
+                            <TableCell className="min-w-[90px] p-2"></TableCell>
+                            {ledgerData.show_crates && <TableCell className="min-w-[80px] p-2"></TableCell>}
+                            <TableCell className="min-w-[70px] p-2"></TableCell>
+                            <TableCell className="min-w-[70px] p-2"></TableCell>
+                            <TableCell className="min-w-[80px] p-2"></TableCell>
+                            <TableCell className="min-w-[90px] p-2"></TableCell>
+                            {ledgerData.show_crates && <TableCell className="min-w-[80px] p-2"></TableCell>}
+                          </TableRow>
+                        ))}
+
+                        {/* Expanded Damage Details */}
+                        {expandedRows.has(entry._id) && entry.damage_details && entry.damage_details.map((damage, index) => (
+                          <TableRow key={`${entry._id}-damage-${index}`} className="bg-red-50">
+                            <TableCell className="min-w-[80px] p-2"></TableCell>
+                            <TableCell className="pl-6 min-w-[150px] p-2">
+                              <div className="flex items-center gap-1">
+                                <span className="text-red-500 text-xs">⚠</span>
+                                <Badge variant="destructive" className="text-xs">
+                                  {damage.type_name}
+                                </Badge>
+                                <span className="text-xs text-red-600">
+                                  D:{damage.damaged} R:{damage.returned} ₹{damage.discount}
+                                </span>
+                              </div>
+                            </TableCell>
+                            <TableCell className="min-w-[90px] p-2"></TableCell>
+                            {ledgerData.show_crates && <TableCell className="min-w-[80px] p-2"></TableCell>}
+                            <TableCell className="min-w-[70px] p-2"></TableCell>
+                            <TableCell className="min-w-[70px] p-2"></TableCell>
+                            <TableCell className="min-w-[80px] p-2"></TableCell>
+                            <TableCell className="min-w-[90px] p-2"></TableCell>
+                            {ledgerData.show_crates && <TableCell className="min-w-[80px] p-2"></TableCell>}
                           </TableRow>
                         ))}
                       </React.Fragment>

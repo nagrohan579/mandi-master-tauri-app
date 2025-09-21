@@ -13,6 +13,7 @@ import type {
   FilterApi,
   FunctionReference,
 } from "convex/server";
+import type * as damageManagement from "../damageManagement.js";
 import type * as debug from "../debug.js";
 import type * as entryManagement from "../entryManagement.js";
 import type * as masterData from "../masterData.js";
@@ -31,6 +32,7 @@ import type * as sales from "../sales.js";
  * ```
  */
 declare const fullApi: ApiFromModules<{
+  damageManagement: typeof damageManagement;
   debug: typeof debug;
   entryManagement: typeof entryManagement;
   masterData: typeof masterData;

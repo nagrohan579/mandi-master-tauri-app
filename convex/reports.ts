@@ -562,9 +562,21 @@ export const getSupplierLedger = query({
         .filter((q) => q.eq(q.field("payment_date"), session.session_date))
         .collect();
 
+      // Get damage entries for this date, supplier, and item
+      const damageEntries = await ctx.db
+        .query("damage_entries")
+        .withIndex("by_date_supplier", (q) => q.eq("damage_date", session.session_date).eq("supplier_id", args.supplier_id))
+        .filter((q) => q.eq(q.field("item_id"), args.item_id))
+        .collect();
+
       // Calculate totals for this date
       const dayProcurementAmount = procurementEntries.reduce((sum, entry) => sum + entry.total_amount, 0);
       const dayProcurementQuantity = procurementEntries.reduce((sum, entry) => sum + entry.quantity, 0);
+
+      // Calculate damage totals
+      const dayDamagedQuantity = damageEntries.reduce((sum, entry) => sum + entry.damaged_quantity, 0);
+      const dayDamageReturned = damageEntries.reduce((sum, entry) => sum + entry.damaged_returned_quantity, 0);
+      const dayDamageDiscount = damageEntries.reduce((sum, entry) => sum + entry.supplier_discount_amount, 0);
 
       // Calculate settlement totals (use null if no payments)
       const dayAmountPaid = supplierPayments.length > 0
@@ -574,14 +586,22 @@ export const getSupplierLedger = query({
         ? supplierPayments.reduce((sum, payment) => sum + payment.crates_returned, 0)
         : null;
 
-      // Only include dates where there was procurement activity
-      if (procurementEntries.length > 0) {
+      // Only include dates where there was procurement or damage activity
+      if (procurementEntries.length > 0 || damageEntries.length > 0) {
         // Collect type details
         const typeDetails = procurementEntries.map((entry: any) => ({
           type_name: entry.type_name,
           quantity: entry.quantity,
           rate: entry.rate,
           amount: entry.total_amount,
+        }));
+
+        // Collect damage details
+        const damageDetails = damageEntries.map((entry: any) => ({
+          type_name: entry.type_name,
+          damaged: entry.damaged_quantity,
+          returned: entry.damaged_returned_quantity,
+          discount: entry.supplier_discount_amount,
         }));
 
         ledgerEntries.push({
@@ -591,7 +611,11 @@ export const getSupplierLedger = query({
           procurement_quantity: dayProcurementQuantity,
           amount_paid: dayAmountPaid,
           crates_returned: dayCratesReturned,
+          damaged_quantity: dayDamagedQuantity,
+          damage_returned_quantity: dayDamageReturned,
+          damage_discount_amount: dayDamageDiscount,
           type_details: typeDetails,
+          damage_details: damageDetails,
         });
       }
     }

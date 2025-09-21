@@ -1,12 +1,13 @@
 import React, { useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { format } from "date-fns";
-import { CalendarDays, Package, Search, IndianRupee, TrendingUp, Users, Truck } from "lucide-react";
+import { CalendarDays, Package, Search, IndianRupee, TrendingUp, Users, Truck, AlertTriangle, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { DatePicker } from "@/components/DatePicker";
 import { formatDateForIndia } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -37,12 +38,29 @@ interface EndOfDayData {
   };
 }
 
+interface DamageEntry {
+  id: string;
+  supplier_id: string;
+  supplier_name: string;
+  type_name: string;
+  damaged_quantity: number;
+  damaged_returned_quantity: number;
+  supplier_discount_amount: number;
+}
+
+interface AvailableType {
+  type_name: string;
+  current_stock: number;
+}
+
 export function EndOfDayPage() {
   // State management
   const [selectedItem, setSelectedItem] = useState<string>("");
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
   const [hasSearched, setHasSearched] = useState(false);
   const [settlementForms, setSettlementForms] = useState<{[key: string]: {amount: string; crates: string}}>({});
+  const [damageEntries, setDamageEntries] = useState<DamageEntry[]>([]);
+  const [showDamageAssessment, setShowDamageAssessment] = useState(false);
 
   const { toast } = useToast();
 
@@ -60,8 +78,30 @@ export function EndOfDayPage() {
       : "skip"
   ) as EndOfDayData | undefined;
 
+  // Get available types for damage assessment
+  const availableTypes = useQuery(
+    api.damageManagement.getAvailableTypesForDamage,
+    selectedItem
+      ? { item_id: selectedItem as Id<"items"> }
+      : "skip"
+  ) as AvailableType[] | undefined;
+
+  // Get existing damage entries for this date/item
+  const existingDamageEntries = useQuery(
+    api.damageManagement.getDamageEntriesForDate,
+    hasSearched && selectedItem && selectedDate
+      ? {
+          damage_date: format(selectedDate, "yyyy-MM-dd"),
+          item_id: selectedItem as Id<"items">,
+        }
+      : "skip"
+  );
+
   // Supplier payment mutation
   const addSupplierPayment = useMutation(api.payments.addSupplierPayment);
+
+  // Damage entry mutation
+  const recordDamageEntry = useMutation(api.damageManagement.recordDamageEntry);
 
   // Handle search
   const handleSearch = () => {
@@ -84,6 +124,104 @@ export function EndOfDayPage() {
     setSelectedDate(new Date());
     setHasSearched(false);
     setSettlementForms({});
+    setDamageEntries([]);
+    setShowDamageAssessment(false);
+  };
+
+  // Damage entry management functions
+  const addDamageEntry = () => {
+    if (!endOfDayData?.supplier_dues || endOfDayData.supplier_dues.length === 0) {
+      toast({
+        title: "No Suppliers",
+        description: "No suppliers found for this item and date",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const newEntry: DamageEntry = {
+      id: Date.now().toString(),
+      supplier_id: endOfDayData.supplier_dues[0].supplier_id,
+      supplier_name: endOfDayData.supplier_dues[0].supplier_name,
+      type_name: availableTypes?.[0]?.type_name || "",
+      damaged_quantity: 0,
+      damaged_returned_quantity: 0,
+      supplier_discount_amount: 0,
+    };
+    setDamageEntries([...damageEntries, newEntry]);
+  };
+
+  const removeDamageEntry = (id: string) => {
+    setDamageEntries(damageEntries.filter(entry => entry.id !== id));
+  };
+
+  const updateDamageEntry = (id: string, field: keyof DamageEntry, value: string | number) => {
+    setDamageEntries(damageEntries.map(entry => {
+      if (entry.id === id) {
+        const updated = { ...entry, [field]: value };
+
+        // Update supplier name when supplier_id changes
+        if (field === 'supplier_id' && endOfDayData?.supplier_dues) {
+          const supplier = endOfDayData.supplier_dues.find(s => s.supplier_id === value);
+          updated.supplier_name = supplier?.supplier_name || "";
+        }
+
+        return updated;
+      }
+      return entry;
+    }));
+  };
+
+  const validateDamageEntry = (entry: DamageEntry): string | null => {
+    if (!entry.type_name) return "Please select a type";
+    if (entry.damaged_quantity <= 0) return "Damaged quantity must be greater than 0";
+    if (entry.damaged_returned_quantity < 0) return "Returned quantity cannot be negative";
+    if (entry.supplier_discount_amount < 0) return "Discount amount cannot be negative";
+
+    if (entry.damaged_returned_quantity > entry.damaged_quantity) {
+      return `Returned quantity (${entry.damaged_returned_quantity}) cannot exceed damaged quantity (${entry.damaged_quantity})`;
+    }
+
+    return null;
+  };
+
+  const handleSaveDamageEntry = async (entry: DamageEntry) => {
+    const validationError = validateDamageEntry(entry);
+    if (validationError) {
+      toast({
+        title: "Validation Error",
+        description: validationError,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      await recordDamageEntry({
+        damage_date: format(selectedDate!, "yyyy-MM-dd"),
+        supplier_id: entry.supplier_id as Id<"suppliers">,
+        item_id: selectedItem as Id<"items">,
+        type_name: entry.type_name,
+        damaged_quantity: entry.damaged_quantity,
+        damaged_returned_quantity: entry.damaged_returned_quantity,
+        supplier_discount_amount: entry.supplier_discount_amount,
+      });
+
+      toast({
+        title: "Damage Entry Saved",
+        description: `Recorded damage for ${entry.type_name} from ${entry.supplier_name}`,
+      });
+
+      // Remove this entry from the form
+      removeDamageEntry(entry.id);
+
+    } catch (error) {
+      toast({
+        title: "Save Failed",
+        description: "Failed to save damage entry",
+        variant: "destructive",
+      });
+    }
   };
 
   // Handle settlement form changes
@@ -236,10 +374,22 @@ export function EndOfDayPage() {
           {/* Sales Summary */}
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <TrendingUp className="w-5 h-5" />
-                Sales Summary - {endOfDayData.item_info.name} ({endOfDayData.item_info.unit}) on {formatDateForIndia(format(selectedDate!, "yyyy-MM-dd"))}
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5" />
+                  Sales Summary - {endOfDayData.item_info.name} ({endOfDayData.item_info.unit}) on {formatDateForIndia(format(selectedDate!, "yyyy-MM-dd"))}
+                </CardTitle>
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="damage-assessment"
+                    checked={showDamageAssessment}
+                    onCheckedChange={(checked) => setShowDamageAssessment(checked as boolean)}
+                  />
+                  <Label htmlFor="damage-assessment" className="text-sm font-medium cursor-pointer">
+                    Show Damage Assessment
+                  </Label>
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -274,6 +424,150 @@ export function EndOfDayPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Damage Assessment Section */}
+          {showDamageAssessment && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <AlertTriangle className="w-5 h-5" />
+                  Damage Assessment
+                </CardTitle>
+                <Button onClick={addDamageEntry} className="flex items-center gap-2">
+                  <Plus className="w-4 h-4" />
+                  Add Damage Entry
+                </Button>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Record damaged items found during end of day review
+              </p>
+            </CardHeader>
+            <CardContent>
+              {/* Existing Damage Entries Display */}
+              {existingDamageEntries && existingDamageEntries.length > 0 && (
+                <div className="mb-6">
+                  <h4 className="font-medium mb-3">Previously Recorded Damage:</h4>
+                  <div className="space-y-2">
+                    {existingDamageEntries.map((entry: any) => (
+                      <div key={entry._id} className="flex items-center justify-between p-3 bg-muted rounded-lg">
+                        <div>
+                          <span className="font-medium">{entry.supplier_name}</span> - {entry.type_name}
+                        </div>
+                        <div className="text-right text-sm">
+                          <div>Damaged: {entry.damaged_quantity}, Returned: {entry.damaged_returned_quantity}</div>
+                          <div className="text-red-600 font-medium">Discount: ₹{entry.supplier_discount_amount.toLocaleString()}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* New Damage Entry Forms */}
+              {damageEntries.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  <AlertTriangle className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No damage entries added yet. Click "Add Damage Entry" to start.</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Header Row */}
+                  <div className="grid grid-cols-12 gap-4 font-medium text-sm text-muted-foreground border-b pb-2">
+                    <div className="col-span-2">Supplier</div>
+                    <div className="col-span-2">Type</div>
+                    <div className="col-span-2">Damaged Quantity</div>
+                    <div className="col-span-2">Returned Quantity</div>
+                    <div className="col-span-2">Discount (₹)</div>
+                    <div className="col-span-2">Actions</div>
+                  </div>
+
+                  {/* Damage Entry Rows */}
+                  {damageEntries.map((entry) => (
+                    <div key={entry.id} className="grid grid-cols-12 gap-4 items-center">
+                      <div className="col-span-2">
+                        <Select
+                          value={entry.supplier_id}
+                          onValueChange={(value) => updateDamageEntry(entry.id, 'supplier_id', value)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select supplier" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {endOfDayData?.supplier_dues?.map((supplier) => (
+                              <SelectItem key={supplier.supplier_id} value={supplier.supplier_id}>
+                                {supplier.supplier_name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="col-span-2">
+                        <Select
+                          value={entry.type_name}
+                          onValueChange={(value) => updateDamageEntry(entry.id, 'type_name', value)}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableTypes?.map((type) => (
+                              <SelectItem key={type.type_name} value={type.type_name}>
+                                {type.type_name} ({type.current_stock} available)
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="col-span-2">
+                        <Input
+                          type="number"
+                          placeholder="0"
+                          value={entry.damaged_quantity || ""}
+                          onChange={(e) => updateDamageEntry(entry.id, 'damaged_quantity', parseFloat(e.target.value) || 0)}
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <Input
+                          type="number"
+                          placeholder="0"
+                          value={entry.damaged_returned_quantity || ""}
+                          onChange={(e) => updateDamageEntry(entry.id, 'damaged_returned_quantity', parseFloat(e.target.value) || 0)}
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <Input
+                          type="number"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={entry.supplier_discount_amount || ""}
+                          onChange={(e) => updateDamageEntry(entry.id, 'supplier_discount_amount', parseFloat(e.target.value) || 0)}
+                        />
+                      </div>
+                      <div className="col-span-2 flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => handleSaveDamageEntry(entry)}
+                          className="flex items-center gap-1"
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => removeDamageEntry(entry.id)}
+                          className="text-destructive hover:text-destructive"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+          )}
 
           {/* Supplier Settlements */}
           {endOfDayData.supplier_dues.length > 0 ? (
