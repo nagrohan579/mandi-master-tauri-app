@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "convex/react";
+import { format } from "date-fns";
 import { Search, Trash2, AlertTriangle, Shield, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -175,6 +176,25 @@ export function DeleteEntriesPage() {
     }
   }, [procurementResults, salesResults, paymentResults, filters.entryType, searchParams, toast]);
 
+  // Auto-search when dates change after initial search
+  useEffect(() => {
+    // Only auto-search if we've already performed a search and have valid dates
+    if (searchParams && filters.startDate && filters.endDate) {
+      const startDateStr = format(filters.startDate, "yyyy-MM-dd");
+      const endDateStr = format(filters.endDate, "yyyy-MM-dd");
+
+      // Check if the dates have actually changed from current search params
+      if (searchParams.startDate !== startDateStr || searchParams.endDate !== endDateStr) {
+        // Use a small delay to avoid rapid successive calls
+        const timeoutId = setTimeout(() => {
+          handleSearch();
+        }, 300);
+
+        return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [filters.startDate, filters.endDate, searchParams]);
+
   const handleSearch = async () => {
     console.log('DeleteEntriesPage: Search initiated', filters);
 
@@ -188,8 +208,8 @@ export function DeleteEntriesPage() {
     }
 
     try {
-      const startDateStr = filters.startDate.toISOString().split('T')[0];
-      const endDateStr = filters.endDate.toISOString().split('T')[0];
+      const startDateStr = format(filters.startDate, "yyyy-MM-dd");
+      const endDateStr = format(filters.endDate, "yyyy-MM-dd");
 
       console.log('DeleteEntriesPage: Date range', { startDateStr, endDateStr, entryType: filters.entryType });
 
@@ -376,7 +396,14 @@ export function DeleteEntriesPage() {
             <Label>Start Date</Label>
             <DatePicker
               date={filters.startDate}
-              setDate={(date) => setFilters(prev => ({ ...prev, startDate: date }))}
+              setDate={(date) => setFilters(prev => {
+                // If the new start date is after the current end date, reset end date
+                const newFilters = { ...prev, startDate: date };
+                if (date && prev.endDate && date > prev.endDate) {
+                  newFilters.endDate = undefined;
+                }
+                return newFilters;
+              })}
               placeholder="Select start date"
             />
           </div>
@@ -387,6 +414,13 @@ export function DeleteEntriesPage() {
               date={filters.endDate}
               setDate={(date) => setFilters(prev => ({ ...prev, endDate: date }))}
               placeholder="Select end date"
+              disabled={(date) => {
+                // Disable dates before the start date
+                if (filters.startDate) {
+                  return date < filters.startDate;
+                }
+                return false;
+              }}
             />
           </div>
         </div>
