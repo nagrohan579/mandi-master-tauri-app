@@ -456,9 +456,47 @@ export const updateProcurementEntry = mutation({
         console.log("Updated daily inventory for old type");
       }
 
+      // 4.5. Update current inventory for the old type name
+      const currentInventoryOld = await ctx.db
+        .query("current_inventory")
+        .withIndex("by_item_type", (q) => q.eq("item_id", currentEntry.item_id).eq("type_name", oldTypeName))
+        .first();
+
+      if (currentInventoryOld) {
+        const quantityDifference = newQuantity - oldQuantity;
+        const newCurrentStock = Math.max(0, currentInventoryOld.current_stock + quantityDifference);
+
+        // Recalculate weighted average rate for current inventory
+        let newWeightedAvgCurrent = currentInventoryOld.weighted_avg_rate;
+        if (newCurrentStock > 0) {
+          const oldTotalValue = currentInventoryOld.current_stock * currentInventoryOld.weighted_avg_rate;
+          const oldEntryValue = oldQuantity * oldRate;
+          const newEntryValue = newQuantity * newRate;
+          const newTotalValue = oldTotalValue - oldEntryValue + newEntryValue;
+          newWeightedAvgCurrent = newTotalValue / newCurrentStock;
+        }
+
+        await ctx.db.patch(currentInventoryOld._id, {
+          current_stock: newCurrentStock,
+          weighted_avg_rate: newWeightedAvgCurrent,
+          last_updated: new Date().toISOString().split("T")[0],
+        });
+        console.log("Updated current inventory for old type");
+      }
+
       // 5. If type name changed, handle the new type name inventory
       if (newTypeName !== oldTypeName) {
         console.log(`Type name changed from "${oldTypeName}" to "${newTypeName}"`);
+
+        // Reduce current inventory for the old type (since we're moving quantity to new type)
+        if (currentInventoryOld) {
+          const newOldCurrentStock = Math.max(0, currentInventoryOld.current_stock - oldQuantity);
+          await ctx.db.patch(currentInventoryOld._id, {
+            current_stock: newOldCurrentStock,
+            last_updated: new Date().toISOString().split("T")[0],
+          });
+          console.log("Reduced current inventory for old type due to type change");
+        }
 
         // Update item_types for the new type
         await updateItemType(ctx, currentEntry.item_id, newTypeName);
@@ -501,7 +539,40 @@ export const updateProcurementEntry = mutation({
             weighted_avg_purchase_rate: newRate,
           });
         }
-        console.log("Updated/created inventory for new type");
+        console.log("Updated/created daily inventory for new type");
+
+        // 5.5. Update current inventory for the new type name
+        const currentInventoryNew = await ctx.db
+          .query("current_inventory")
+          .withIndex("by_item_type", (q) => q.eq("item_id", currentEntry.item_id).eq("type_name", newTypeName))
+          .first();
+
+        if (currentInventoryNew) {
+          // Add to existing current inventory
+          const newCurrentStock = currentInventoryNew.current_stock + newQuantity;
+
+          // Recalculate weighted average rate
+          const oldTotalValue = currentInventoryNew.current_stock * currentInventoryNew.weighted_avg_rate;
+          const newEntryValue = newQuantity * newRate;
+          const newTotalValue = oldTotalValue + newEntryValue;
+          const newWeightedAvgCurrent = newCurrentStock > 0 ? newTotalValue / newCurrentStock : newRate;
+
+          await ctx.db.patch(currentInventoryNew._id, {
+            current_stock: newCurrentStock,
+            weighted_avg_rate: newWeightedAvgCurrent,
+            last_updated: new Date().toISOString().split("T")[0],
+          });
+        } else {
+          // Create new current inventory record
+          await ctx.db.insert("current_inventory", {
+            item_id: currentEntry.item_id,
+            type_name: newTypeName,
+            current_stock: newQuantity,
+            weighted_avg_rate: newRate,
+            last_updated: new Date().toISOString().split("T")[0],
+          });
+        }
+        console.log("Updated/created current inventory for new type");
       }
 
       // 6. Update session totals
@@ -1270,18 +1341,28 @@ async function recalculateSupplierOutstanding(ctx: any, supplier_id: string, ite
       .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
       .collect();
 
+    // Get all damage discounts for this supplier+item
+    const damageEntries = await ctx.db
+      .query("damage_entries")
+      .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+      .collect();
+
     // Calculate totals
     const totalProcurement = relevantEntries.reduce((sum, entry) => sum + entry.total_amount, 0);
     const totalPaid = payments.reduce((sum, payment) => sum + payment.amount_paid, 0);
     const totalQuantityPurchased = relevantEntries.reduce((sum, entry) => sum + entry.quantity, 0);
     const totalCratesReturned = payments.reduce((sum, payment) => sum + payment.crates_returned, 0);
 
-    // Calculate final outstanding amounts (including opening balance)
+    // Include damage discounts and damage returned quantities
+    const totalDamageDiscounts = damageEntries.reduce((sum, entry) => sum + entry.supplier_discount_amount, 0);
+    const totalDamageReturned = damageEntries.reduce((sum, entry) => sum + entry.damaged_returned_quantity, 0);
+
+    // Calculate final outstanding amounts (including opening balance and damage adjustments)
     const openingPayment = openingBalance?.opening_payment_due || 0;
     const openingQuantity = openingBalance?.opening_quantity_due || 0;
 
-    const finalPaymentDue = openingPayment + totalProcurement - totalPaid;
-    const finalQuantityDue = openingQuantity + totalQuantityPurchased - totalCratesReturned;
+    const finalPaymentDue = openingPayment + totalProcurement - totalPaid - totalDamageDiscounts;
+    const finalQuantityDue = openingQuantity + totalQuantityPurchased - totalCratesReturned - totalDamageReturned;
 
     // Update or create supplier outstanding record
     const currentDate = new Date().toISOString().split("T")[0];
@@ -1840,7 +1921,7 @@ async function calculateCorrectSupplierOutstanding(ctx: any, supplier_id: string
 export const deleteEntry = mutation({
   args: {
     entryType: v.union(v.literal("procurement"), v.literal("sales"), v.literal("payment")),
-    entryId: v.id("_storage"), // Use generic ID type
+    entryId: v.string(), // Use string to handle different table IDs
     forceDelete: v.optional(v.boolean())
   },
   handler: async (ctx, args) => {
@@ -1854,55 +1935,46 @@ export const deleteEntry = mutation({
           throw new Error("Procurement entry not found");
         }
 
-        // Call the deleteProcurementEntry mutation with proper parameters
-        const result = await ctx.runMutation(api.entryManagement.deleteProcurementEntry, {
-          entryId: entryId as Id<"procurement_entries">,
-          forceDelete
-        });
-        return result;
+        // Directly call the deletion logic from deleteProcurementEntry
+        console.log(`Starting deletion of procurement entry: ${entryId}`);
+
+        // Get the session to find the date
+        const session = await ctx.db.get(procurementEntry.procurement_session_id);
+        if (!session) {
+          throw new Error("Procurement session not found");
+        }
+
+        const sessionDate = session.session_date;
+        const { supplier_id, item_id, quantity, total_amount } = procurementEntry;
+
+        // Delete the procurement entry
+        await ctx.db.delete(entryId as Id<"procurement_entries">);
+
+        // Update inventory - reduce current stock
+        await updateInventoryAfterDeletion(ctx, item_id, procurementEntry.type_name, quantity);
+
+        // Update daily inventory for the session date
+        await updateDailyInventoryAfterDeletion(ctx, sessionDate, item_id, procurementEntry.type_name, quantity);
+
+        // Update supplier outstanding - reduce what we owe
+        await updateSupplierOutstandingAfterDeletion(ctx, supplier_id, item_id, total_amount, quantity);
+
+        // Clean up session if this was the last entry
+        await cleanupEmptyProcurementSession(ctx, procurementEntry.procurement_session_id);
+
+        // Deactivate item type if no stock remains
+        await deactivateItemTypeIfEmpty(ctx, item_id, procurementEntry.type_name);
+
+        console.log(`Successfully deleted procurement entry: ${entryId}`);
+        return { success: true, message: "Procurement entry deleted successfully" };
 
       } else if (entryType === "sales") {
-        // Get the sales entry first to ensure it exists
-        const salesEntry = await ctx.db.get(entryId as Id<"sales_entries">);
-        if (!salesEntry) {
-          throw new Error("Sales entry not found");
-        }
-
-        const result = await ctx.runMutation(api.entryManagement.deleteSalesEntry, {
-          entryId: entryId as Id<"sales_entries">,
-          forceDelete
-        });
-        return result;
+        // For now, throw an error for sales entries - they need proper cascade implementation
+        throw new Error("Sales entry deletion not implemented yet. Please use the specific sales deletion function.");
 
       } else if (entryType === "payment") {
-        // For payment entries, check both tables
-        try {
-          const supplierPayment = await ctx.db.get(entryId as Id<"supplier_payments">);
-          if (supplierPayment) {
-            const result = await ctx.runMutation(api.entryManagement.deleteSupplierPayment, {
-              paymentId: entryId as Id<"supplier_payments">,
-              forceDelete
-            });
-            return result;
-          }
-        } catch {
-          // Continue to check seller payments
-        }
-
-        try {
-          const sellerPayment = await ctx.db.get(entryId as Id<"seller_payments">);
-          if (sellerPayment) {
-            const result = await ctx.runMutation(api.entryManagement.deleteSellerPayment, {
-              paymentId: entryId as Id<"seller_payments">,
-              forceDelete
-            });
-            return result;
-          }
-        } catch {
-          // Payment not found in either table
-        }
-
-        throw new Error("Payment entry not found in either supplier_payments or seller_payments");
+        // For now, throw an error for payment entries - they need proper cascade implementation
+        throw new Error("Payment entry deletion not implemented yet. Please use the specific payment deletion functions.");
       }
 
       throw new Error(`Unsupported entry type: ${entryType}`);
@@ -1912,4 +1984,98 @@ export const deleteEntry = mutation({
     }
   },
 });
+
+// Helper functions for procurement entry deletion cascade operations
+
+async function updateInventoryAfterDeletion(ctx: any, item_id: string, type_name: string, deletedQuantity: number) {
+  // Update current inventory - reduce stock
+  const currentInventory = await ctx.db
+    .query("current_inventory")
+    .withIndex("by_item_type", (q) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .first();
+
+  if (currentInventory) {
+    const newStock = Math.max(0, currentInventory.current_stock - deletedQuantity);
+    await ctx.db.patch(currentInventory._id, {
+      current_stock: newStock,
+      last_updated: new Date().toISOString().split("T")[0],
+    });
+  }
+}
+
+async function updateDailyInventoryAfterDeletion(ctx: any, sessionDate: string, item_id: string, type_name: string, deletedQuantity: number) {
+  // Update daily inventory for the session date
+  const dailyInventory = await ctx.db
+    .query("daily_inventory")
+    .withIndex("by_date_item", (q) => q.eq("inventory_date", sessionDate).eq("item_id", item_id))
+    .filter((q) => q.eq(q.field("type_name"), type_name))
+    .first();
+
+  if (dailyInventory) {
+    const newPurchased = Math.max(0, dailyInventory.purchased_today - deletedQuantity);
+    const newClosing = Math.max(0, dailyInventory.closing_stock - deletedQuantity);
+
+    await ctx.db.patch(dailyInventory._id, {
+      purchased_today: newPurchased,
+      closing_stock: newClosing,
+    });
+  }
+}
+
+async function updateSupplierOutstandingAfterDeletion(ctx: any, supplier_id: string, item_id: string, deletedAmount: number, deletedQuantity: number) {
+  // Update supplier outstanding - reduce what we owe
+  const outstanding = await ctx.db
+    .query("supplier_outstanding")
+    .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+    .first();
+
+  if (outstanding) {
+    const newPaymentDue = Math.max(0, outstanding.payment_due - deletedAmount);
+    const newQuantityDue = Math.max(0, outstanding.quantity_due - deletedQuantity);
+
+    await ctx.db.patch(outstanding._id, {
+      payment_due: newPaymentDue,
+      quantity_due: newQuantityDue,
+      last_updated: new Date().toISOString().split("T")[0],
+    });
+  }
+}
+
+async function cleanupEmptyProcurementSession(ctx: any, sessionId: string) {
+  // Check if there are any remaining entries in this session
+  const remainingEntries = await ctx.db
+    .query("procurement_entries")
+    .withIndex("by_session", (q) => q.eq("procurement_session_id", sessionId))
+    .collect();
+
+  // If no entries remain, delete the session
+  if (remainingEntries.length === 0) {
+    await ctx.db.delete(sessionId);
+    console.log(`Deleted empty procurement session: ${sessionId}`);
+  }
+}
+
+async function deactivateItemTypeIfEmpty(ctx: any, item_id: string, type_name: string) {
+  // Check if there's any stock remaining for this item type
+  const currentInventory = await ctx.db
+    .query("current_inventory")
+    .withIndex("by_item_type", (q) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .first();
+
+  // If no stock remains, mark the item type as inactive
+  if (!currentInventory || currentInventory.current_stock <= 0) {
+    const itemType = await ctx.db
+      .query("item_types")
+      .withIndex("by_item_type", (q) => q.eq("item_id", item_id).eq("type_name", type_name))
+      .first();
+
+    if (itemType && itemType.is_active) {
+      await ctx.db.patch(itemType._id, {
+        is_active: false,
+        last_seen_date: new Date().toISOString().split("T")[0],
+      });
+      console.log(`Deactivated item type: ${item_id} - ${type_name}`);
+    }
+  }
+}
 
