@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
 
 // Search and filter queries for entry management
 export const searchProcurementEntries = query({
@@ -222,17 +223,39 @@ export const searchSalesEntries = query({
             console.log(`After item filter: ${entries.length} entries`);
           }
 
-          // Enrich with seller and item names
+          // Enrich with seller and item names and line items
           for (const entry of entries) {
             try {
               const seller = await ctx.db.get(entry.seller_id);
               const item = await ctx.db.get(entry.item_id);
+
+              // Get line items for this sales entry - try both index and filter approaches
+              let lineItems: any[] = [];
+              try {
+                // First try with index
+                lineItems = await ctx.db
+                  .query("sales_line_items")
+                  .withIndex("by_sales_entry", (q: any) => q.eq("sales_entry_id", entry._id))
+                  .collect();
+
+                // If no results with index, try with filter (slower but more reliable)
+                if (lineItems.length === 0) {
+                  lineItems = await ctx.db
+                    .query("sales_line_items")
+                    .filter((q: any) => q.eq(q.field("sales_entry_id"), entry._id))
+                    .collect();
+                }
+              } catch (error) {
+                console.error("Error querying line items:", error);
+                lineItems = [];
+              }
 
               results.push({
                 ...entry,
                 session_date: session.session_date,
                 seller_name: seller?.name || "Unknown Seller",
                 item_name: item?.name || "Unknown Item",
+                line_items: lineItems || [], // Ensure it's always an array
               });
             } catch (error) {
               console.error("Error processing sales entry:", entry._id, error);
@@ -264,7 +287,7 @@ export const searchSalesEntries = query({
   },
 });
 
-export const searchPaymentEntries = query({
+export const searchSupplierSettlementEntries = query({
   args: {
     startDate: v.string(),
     endDate: v.string(),
@@ -272,7 +295,7 @@ export const searchPaymentEntries = query({
   },
   handler: async (ctx, args) => {
     try {
-      console.log("searchPaymentEntries called with args:", args);
+      console.log("searchSupplierSettlementEntries called with args:", args);
 
       const results = [];
 
@@ -303,10 +326,11 @@ export const searchPaymentEntries = query({
 
           results.push({
             ...payment,
-            person_name: supplier?.name || "Unknown Supplier",
+            supplier_name: supplier?.name || "Unknown Supplier",
             item_name: item?.name || "Unknown Item",
             type: "supplier_payment",
             amount: payment.amount_paid, // Map to consistent field name for UI
+            crates_returned: payment.crates_returned || 0,
           });
         } catch (error) {
           console.error("Error processing supplier payment:", payment._id, error);
@@ -314,49 +338,80 @@ export const searchPaymentEntries = query({
         }
       }
 
-      // Search seller payments using the by_date index from schema
-      const sellerPaymentsQuery = ctx.db
-        .query("seller_payments")
-        .withIndex("by_date", (q) =>
-          q.gte("payment_date", args.startDate)
-           .lte("payment_date", args.endDate)
-        );
-
-      let sellerPayments;
-      if (args.itemId) {
-        // Filter by item after using the date index
-        sellerPayments = await sellerPaymentsQuery
-          .filter((q) => q.eq(q.field("item_id"), args.itemId))
-          .collect();
-      } else {
-        sellerPayments = await sellerPaymentsQuery.collect();
-      }
-
-      console.log("Found seller payments:", sellerPayments.length);
-
-      for (const payment of sellerPayments) {
-        try {
-          const seller = await ctx.db.get(payment.seller_id);
-          const item = await ctx.db.get(payment.item_id);
-
-          results.push({
-            ...payment,
-            person_name: seller?.name || "Unknown Seller",
-            item_name: item?.name || "Unknown Item",
-            type: "seller_payment",
-            amount: payment.amount_received, // Map to consistent field name for UI
-          });
-        } catch (error) {
-          console.error("Error processing seller payment:", payment._id, error);
-          // Continue with other payments even if one fails
-        }
-      }
-
-      console.log("Returning payment results:", results.length);
+      console.log("Returning supplier settlement results:", results.length);
       return results.sort((a, b) => b.payment_date.localeCompare(a.payment_date));
     } catch (error) {
-      console.error("searchPaymentEntries error:", error);
+      console.error("searchSupplierSettlementEntries error:", error);
       return [];
+    }
+  },
+});
+
+// Debug query to check line items
+export const debugLineItems = query({
+  args: {
+    entryId: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    // Get all line items
+    const allLineItems = await ctx.db.query("sales_line_items").collect();
+    console.log(`Total line items in database: ${allLineItems.length}`);
+
+    if (args.entryId) {
+      // Check specific entry
+      const lineItemsForEntry = await ctx.db
+        .query("sales_line_items")
+        .filter((q) => q.eq(q.field("sales_entry_id"), args.entryId))
+        .collect();
+
+      return {
+        totalLineItems: allLineItems.length,
+        lineItemsForEntry: lineItemsForEntry.length,
+        allLineItems: allLineItems.slice(0, 5), // First 5 for debugging
+        specificLineItems: lineItemsForEntry,
+      };
+    }
+
+    return {
+      totalLineItems: allLineItems.length,
+      allLineItems: allLineItems.slice(0, 5), // First 5 for debugging
+    };
+  },
+});
+
+// Mutation for updating supplier settlement entries
+export const updateSupplierPayment = mutation({
+  args: {
+    entryId: v.id("supplier_payments"),
+    amount_paid: v.optional(v.number()),
+    crates_returned: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    try {
+      const { entryId, ...updates } = args;
+
+      // Filter out undefined values
+      const filteredUpdates = Object.fromEntries(
+        Object.entries(updates).filter(([_, value]) => value !== undefined)
+      );
+
+      if (Object.keys(filteredUpdates).length === 0) {
+        throw new Error("No valid updates provided");
+      }
+
+      // Update the supplier payment
+      await ctx.db.patch(entryId, filteredUpdates);
+
+      // Recalculate supplier outstanding balances
+      const payment = await ctx.db.get(entryId);
+      if (payment) {
+        await recalculateSupplierOutstanding(ctx, payment.supplier_id, payment.item_id);
+      }
+
+      return true;
+    } catch (error) {
+      console.error("updateSupplierPayment error:", error);
+      throw new Error("Failed to update supplier payment");
     }
   },
 });
@@ -643,39 +698,144 @@ export const updateSalesEntry = mutation({
     amount_paid: v.optional(v.number()),
     less_discount: v.optional(v.number()),
     crates_returned: v.optional(v.number()),
+    line_items: v.optional(v.array(v.object({
+      type_name: v.string(),
+      quantity: v.number(),
+      sale_rate: v.number(),
+      amount: v.number(),
+    }))),
   },
   handler: async (ctx, args) => {
     try {
-      const { entryId, ...updates } = args;
+      console.log("updateSalesEntry called with args:", JSON.stringify(args, null, 2));
+      const { entryId, line_items, ...updates } = args;
 
       // Get the current entry
       const currentEntry = await ctx.db.get(entryId);
       if (!currentEntry) {
         throw new Error("Sales entry not found");
       }
+      console.log("Current entry found:", currentEntry._id);
 
-      // Recalculate outstanding balances if payment details changed
+      let newTotalAmountPurchased = currentEntry.total_amount_purchased;
+      let newTotalQuantityPurchased = currentEntry.total_quantity_purchased;
+
+      // Handle line_items updates if provided
+      if (line_items) {
+        console.log("Processing line items update...");
+        // Get current line items
+        const currentLineItems = await ctx.db
+          .query("sales_line_items")
+          .withIndex("by_sales_entry", (q) => q.eq("sales_entry_id", entryId))
+          .collect();
+        console.log(`Found ${currentLineItems.length} existing line items`);
+
+        // STEP 1: Reverse the inventory impact of old line items (add back to stock)
+        for (const oldLineItem of currentLineItems) {
+          console.log(`Reversing inventory for old line item: ${oldLineItem.type_name}, quantity: ${oldLineItem.quantity}`);
+          // Add back to current inventory (reverse the sale)
+          await updateCurrentInventoryForSaleReversal(ctx, currentEntry.item_id, oldLineItem.type_name, oldLineItem.quantity);
+
+          // Get session for daily inventory update
+          const session = await ctx.db.get(currentEntry.sales_session_id);
+          if (session) {
+            await updateDailyInventoryForSaleReversal(ctx, session.session_date, currentEntry.item_id, oldLineItem.type_name, oldLineItem.quantity);
+          }
+        }
+
+        // STEP 2: Delete existing line items
+        for (const lineItem of currentLineItems) {
+          await ctx.db.delete(lineItem._id);
+        }
+        console.log("Deleted existing line items");
+
+        // STEP 3: Insert new line items and apply new inventory impact
+        newTotalAmountPurchased = 0;
+        newTotalQuantityPurchased = 0;
+
+        for (const lineItem of line_items) {
+          console.log("Inserting new line item:", lineItem);
+          await ctx.db.insert("sales_line_items", {
+            sales_entry_id: entryId,
+            type_name: lineItem.type_name,
+            quantity: lineItem.quantity,
+            sale_rate: lineItem.sale_rate,
+            amount: lineItem.amount,
+          });
+
+          // Update inventory to reflect new sale
+          console.log(`Applying inventory impact for new line item: ${lineItem.type_name}, quantity: ${lineItem.quantity}`);
+          await updateCurrentInventoryForSale(ctx, currentEntry.item_id, lineItem.type_name, lineItem.quantity);
+
+          // Get session for daily inventory update
+          const session = await ctx.db.get(currentEntry.sales_session_id);
+          if (session) {
+            await updateInventoryForSale(ctx, currentEntry.sales_session_id, currentEntry.item_id, lineItem.type_name, lineItem.quantity);
+          }
+
+          newTotalAmountPurchased += lineItem.amount;
+          newTotalQuantityPurchased += lineItem.quantity;
+        }
+        console.log(`New totals: amount=${newTotalAmountPurchased}, quantity=${newTotalQuantityPurchased}`);
+      }
+
+      // Recalculate outstanding balances
       const newAmountPaid = updates.amount_paid ?? currentEntry.amount_paid;
       const newDiscount = updates.less_discount ?? currentEntry.less_discount;
       const newCratesReturned = updates.crates_returned ?? currentEntry.crates_returned;
 
       // Calculate new outstanding balances
-      const newPaymentOutstanding = currentEntry.total_amount_purchased - newAmountPaid - newDiscount;
-      const newQuantityOutstanding = currentEntry.total_quantity_purchased - newCratesReturned;
+      const newPaymentOutstanding = newTotalAmountPurchased - newAmountPaid - newDiscount;
+      const newQuantityOutstanding = newTotalQuantityPurchased - newCratesReturned;
 
+      console.log("Updating entry with new totals...");
       // Update the entry
       await ctx.db.patch(entryId, {
         ...updates,
+        total_amount_purchased: newTotalAmountPurchased,
+        total_quantity_purchased: newTotalQuantityPurchased,
         final_payment_outstanding: newPaymentOutstanding,
         final_quantity_outstanding: newQuantityOutstanding,
       });
+      console.log("Entry updated successfully");
 
-      // TODO: Update seller_outstanding table with new balances
+      // Get session details for recalculation
+      const session = await ctx.db.get(currentEntry.sales_session_id);
+      if (!session) {
+        throw new Error("Sales session not found");
+      }
 
+      // Note: Inventory updates are handled within the line_items processing above
+      // when line items are being updated (reversal + new application)
+
+      // Recalculate session totals
+      console.log("Recalculating session totals...");
+      const allSessionEntries = await ctx.db
+        .query("sales_entries")
+        .withIndex("by_session", (q) => q.eq("sales_session_id", session._id))
+        .collect();
+
+      const newSessionTotal = allSessionEntries.reduce((sum, entry) => sum + entry.total_amount_purchased, 0);
+      const uniqueSellers = new Set(allSessionEntries.map(entry => entry.seller_id));
+
+      await ctx.db.patch(session._id, {
+        total_sales_amount: newSessionTotal,
+        total_sellers: uniqueSellers.size,
+      });
+      console.log("Updated session totals");
+
+      // Recalculate all subsequent entries for this seller+item combination
+      console.log("Recalculating subsequent sales entries...");
+      await recalculateAllSellerTransactionsFromDate(ctx, currentEntry.seller_id, currentEntry.item_id, session.session_date);
+
+      console.log("updateSalesEntry completed successfully with complete cascade recalculation");
       return entryId;
     } catch (error) {
       console.error("updateSalesEntry error:", error);
-      throw new Error("Failed to update sales entry");
+      if (error instanceof Error) {
+        console.error("Error stack:", error.stack);
+      }
+      throw error; // Re-throw the original error for better debugging
     }
   },
 });
@@ -860,7 +1020,7 @@ export const deleteProcurementEntry = mutation({
 
     } catch (error) {
       console.error("deleteProcurementEntry error:", error);
-      throw new Error(`Failed to delete procurement entry: ${error.message}`);
+      throw new Error(`Failed to delete procurement entry: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 });
@@ -968,7 +1128,7 @@ export const deleteSalesEntry = mutation({
 
     } catch (error) {
       console.error("deleteSalesEntry error:", error);
-      throw new Error(`Failed to delete sales entry: ${error.message}`);
+      throw new Error(`Failed to delete sales entry: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 });
@@ -980,29 +1140,29 @@ async function recalculateSellerOutstanding(ctx: any, seller_id: string, item_id
   // Get opening balance
   const openingBalance = await ctx.db
     .query("seller_opening_balances")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .first();
 
   // Get all sales entries for this seller+item
   const salesEntries = await ctx.db
     .query("sales_entries")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .collect();
 
   // Get all payments for this seller+item
   const payments = await ctx.db
     .query("seller_payments")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .collect();
 
   // Calculate totals
-  const totalPurchases = salesEntries.reduce((sum, entry) => sum + entry.total_amount_purchased, 0);
-  const totalQuantityPurchased = salesEntries.reduce((sum, entry) => sum + entry.total_quantity_purchased, 0);
-  const totalCratesReturned = salesEntries.reduce((sum, entry) => sum + entry.crates_returned, 0);
-  const totalPaid = salesEntries.reduce((sum, entry) => sum + entry.amount_paid, 0);
-  const totalDiscount = salesEntries.reduce((sum, entry) => sum + entry.less_discount, 0);
-  const totalPayments = payments.reduce((sum, payment) => sum + payment.amount_received, 0);
-  const totalCratesFromPayments = payments.reduce((sum, payment) => sum + payment.crates_returned, 0);
+  const totalPurchases = salesEntries.reduce((sum: number, entry: any) => sum + entry.total_amount_purchased, 0);
+  const totalQuantityPurchased = salesEntries.reduce((sum: number, entry: any) => sum + entry.total_quantity_purchased, 0);
+  const totalCratesReturned = salesEntries.reduce((sum: number, entry: any) => sum + entry.crates_returned, 0);
+  const totalPaid = salesEntries.reduce((sum: number, entry: any) => sum + entry.amount_paid, 0);
+  const totalDiscount = salesEntries.reduce((sum: number, entry: any) => sum + entry.less_discount, 0);
+  const totalPayments = payments.reduce((sum: number, payment: any) => sum + payment.amount_received, 0);
+  const totalCratesFromPayments = payments.reduce((sum: number, payment: any) => sum + payment.crates_returned, 0);
 
   // Calculate final outstanding amounts
   const openingPayment = openingBalance?.opening_payment_due || 0;
@@ -1015,7 +1175,7 @@ async function recalculateSellerOutstanding(ctx: any, seller_id: string, item_id
   const currentDate = new Date().toISOString().split("T")[0];
   const existingOutstanding = await ctx.db
     .query("seller_outstanding")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .first();
 
   if (existingOutstanding) {
@@ -1044,11 +1204,11 @@ async function recalculateSubsequentSalesBalances(ctx: any, seller_id: string, i
   // Get all sales entries for this seller+item after the deleted date, ordered by date
   const salesSessions = await ctx.db
     .query("sales_sessions")
-    .withIndex("by_date", (q) => q.gt("session_date", deletedDate))
+    .withIndex("by_date", (q: any) => q.gt("session_date", deletedDate))
     .collect();
 
   // Sort sessions by date
-  salesSessions.sort((a, b) => a.session_date.localeCompare(b.session_date));
+  salesSessions.sort((a: any, b: any) => a.session_date.localeCompare(b.session_date));
 
   let runningPaymentBalance = 0;
   let runningQuantityBalance = 0;
@@ -1056,7 +1216,7 @@ async function recalculateSubsequentSalesBalances(ctx: any, seller_id: string, i
   // Get opening balance and calculate starting point
   const openingBalance = await ctx.db
     .query("seller_opening_balances")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .first();
 
   runningPaymentBalance = openingBalance?.opening_payment_due || 0;
@@ -1065,14 +1225,14 @@ async function recalculateSubsequentSalesBalances(ctx: any, seller_id: string, i
   // Add all transactions up to the deleted date
   const priorSessions = await ctx.db
     .query("sales_sessions")
-    .withIndex("by_date", (q) => q.lte("session_date", deletedDate))
+    .withIndex("by_date", (q: any) => q.lte("session_date", deletedDate))
     .collect();
 
-  for (const session of priorSessions.sort((a, b) => a.session_date.localeCompare(b.session_date))) {
+  for (const session of priorSessions.sort((a: any, b: any) => a.session_date.localeCompare(b.session_date))) {
     const sessionEntries = await ctx.db
       .query("sales_entries")
-      .withIndex("by_session", (q) => q.eq("sales_session_id", session._id))
-      .filter((q) =>
+      .withIndex("by_session", (q: any) => q.eq("sales_session_id", session._id))
+      .filter((q: any) =>
         q.and(
           q.eq(q.field("seller_id"), seller_id),
           q.eq(q.field("item_id"), item_id)
@@ -1092,8 +1252,8 @@ async function recalculateSubsequentSalesBalances(ctx: any, seller_id: string, i
   for (const session of salesSessions) {
     const sessionEntries = await ctx.db
       .query("sales_entries")
-      .withIndex("by_session", (q) => q.eq("sales_session_id", session._id))
-      .filter((q) =>
+      .withIndex("by_session", (q: any) => q.eq("sales_session_id", session._id))
+      .filter((q: any) =>
         q.and(
           q.eq(q.field("seller_id"), seller_id),
           q.eq(q.field("item_id"), item_id)
@@ -1152,11 +1312,11 @@ async function analyzeProcurementDeletionImpact(ctx: any, entryId: string) {
   // Check if stock was already sold
   const inventoryRecord = await ctx.db
     .query("daily_inventory")
-    .withIndex("by_date_item", (q) =>
+    .withIndex("by_date_item", (q: any) =>
       q.eq("inventory_date", session.session_date)
        .eq("item_id", entry.item_id)
     )
-    .filter((q) => q.eq(q.field("type_name"), entry.type_name))
+    .filter((q: any) => q.eq(q.field("type_name"), entry.type_name))
     .first();
 
   let canDelete = true;
@@ -1203,13 +1363,13 @@ async function analyzeSalesDeletionImpact(ctx: any, entryId: string) {
 
   const lineItems = await ctx.db
     .query("sales_line_items")
-    .withIndex("by_sales_entry", (q) => q.eq("sales_entry_id", entryId))
+    .withIndex("by_sales_entry", (q: any) => q.eq("sales_entry_id", entryId))
     .collect();
 
   // Check for subsequent transactions
   const subsequentEntries = await ctx.db
     .query("sales_entries")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", entry.seller_id).eq("item_id", entry.item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", entry.seller_id).eq("item_id", entry.item_id))
     .collect();
 
   const cascadeEffects = [
@@ -1270,7 +1430,7 @@ export const deleteSupplierPayment = mutation({
 
     } catch (error) {
       console.error("deleteSupplierPayment error:", error);
-      throw new Error(`Failed to delete supplier payment: ${error.message}`);
+      throw new Error(`Failed to delete supplier payment: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 });
@@ -1315,7 +1475,7 @@ export const deleteSellerPayment = mutation({
 
     } catch (error) {
       console.error("deleteSellerPayment error:", error);
-      throw new Error(`Failed to delete seller payment: ${error.message}`);
+      throw new Error(`Failed to delete seller payment: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 });
@@ -1328,34 +1488,34 @@ async function recalculateSupplierOutstanding(ctx: any, supplier_id: string, ite
     // Get opening balance
     const openingBalance = await ctx.db
       .query("supplier_opening_balances")
-      .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+      .withIndex("by_supplier_item", (q: any) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
       .first();
 
     // Get all procurement entries for this supplier+item properly
     const allEntries = await ctx.db.query("procurement_entries").collect();
-    const relevantEntries = allEntries.filter(e => e.supplier_id === supplier_id && e.item_id === item_id);
+    const relevantEntries = allEntries.filter((e: any) => e.supplier_id === supplier_id && e.item_id === item_id);
 
     // Get all payments for this supplier+item
     const payments = await ctx.db
       .query("supplier_payments")
-      .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+      .withIndex("by_supplier_item", (q: any) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
       .collect();
 
     // Get all damage discounts for this supplier+item
     const damageEntries = await ctx.db
       .query("damage_entries")
-      .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+      .withIndex("by_supplier_item", (q: any) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
       .collect();
 
     // Calculate totals
-    const totalProcurement = relevantEntries.reduce((sum, entry) => sum + entry.total_amount, 0);
-    const totalPaid = payments.reduce((sum, payment) => sum + payment.amount_paid, 0);
-    const totalQuantityPurchased = relevantEntries.reduce((sum, entry) => sum + entry.quantity, 0);
-    const totalCratesReturned = payments.reduce((sum, payment) => sum + payment.crates_returned, 0);
+    const totalProcurement = relevantEntries.reduce((sum: number, entry: any) => sum + entry.total_amount, 0);
+    const totalPaid = payments.reduce((sum: number, payment: any) => sum + payment.amount_paid, 0);
+    const totalQuantityPurchased = relevantEntries.reduce((sum: number, entry: any) => sum + entry.quantity, 0);
+    const totalCratesReturned = payments.reduce((sum: number, payment: any) => sum + payment.crates_returned, 0);
 
     // Include damage discounts and damage returned quantities
-    const totalDamageDiscounts = damageEntries.reduce((sum, entry) => sum + entry.supplier_discount_amount, 0);
-    const totalDamageReturned = damageEntries.reduce((sum, entry) => sum + entry.damaged_returned_quantity, 0);
+    const totalDamageDiscounts = damageEntries.reduce((sum: number, entry: any) => sum + entry.supplier_discount_amount, 0);
+    const totalDamageReturned = damageEntries.reduce((sum: number, entry: any) => sum + entry.damaged_returned_quantity, 0);
 
     // Calculate final outstanding amounts (including opening balance and damage adjustments)
     const openingPayment = openingBalance?.opening_payment_due || 0;
@@ -1368,7 +1528,7 @@ async function recalculateSupplierOutstanding(ctx: any, supplier_id: string, ite
     const currentDate = new Date().toISOString().split("T")[0];
     const existingOutstanding = await ctx.db
       .query("supplier_outstanding")
-      .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+      .withIndex("by_supplier_item", (q: any) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
       .first();
 
     if (existingOutstanding) {
@@ -1390,12 +1550,12 @@ async function recalculateSupplierOutstanding(ctx: any, supplier_id: string, ite
     console.log(`Updated supplier outstanding: payment=${finalPaymentDue}, quantity=${finalQuantityDue}`);
   } catch (error) {
     console.error("Error in recalculateSupplierOutstanding:", error);
-    throw new Error(`Failed to recalculate supplier outstanding: ${error.message}`);
+    throw new Error(`Failed to recalculate supplier outstanding: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
 // Helper function to analyze payment deletion impact
-async function analyzePaymentDeletionImpact(ctx: any, entryId: string) {
+async function analyzePaymentDeletionImpact(_ctx: any, _entryId: string) {
   return {
     warningLevel: "low",
     canDelete: true,
@@ -1467,7 +1627,7 @@ export const updateSellerOpeningBalance = mutation({
 
     } catch (error) {
       console.error("updateSellerOpeningBalance error:", error);
-      throw new Error(`Failed to update seller opening balance: ${error.message}`);
+      throw new Error(`Failed to update seller opening balance: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 });
@@ -1530,7 +1690,7 @@ export const updateSupplierOpeningBalance = mutation({
 
     } catch (error) {
       console.error("updateSupplierOpeningBalance error:", error);
-      throw new Error(`Failed to update supplier opening balance: ${error.message}`);
+      throw new Error(`Failed to update supplier opening balance: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 });
@@ -1543,14 +1703,14 @@ async function recalculateAllSellerTransactionsFromDate(ctx: any, seller_id: str
     // Get opening balance
     const openingBalance = await ctx.db
       .query("seller_opening_balances")
-      .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+      .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
       .first();
 
     // Get all sales sessions from the effective date onward, sorted by date
     const allSessions = await ctx.db.query("sales_sessions").collect();
     const relevantSessions = allSessions
-      .filter(session => session.session_date >= fromDate)
-      .sort((a, b) => a.session_date.localeCompare(b.session_date));
+      .filter((session: any) => session.session_date >= fromDate)
+      .sort((a: any, b: any) => a.session_date.localeCompare(b.session_date));
 
     let runningPaymentBalance = openingBalance?.opening_payment_due || 0;
     let runningQuantityBalance = openingBalance?.opening_quantity_due || 0;
@@ -1560,8 +1720,8 @@ async function recalculateAllSellerTransactionsFromDate(ctx: any, seller_id: str
       // Get all sales entries for this seller+item in this session
       const salesEntries = await ctx.db
         .query("sales_entries")
-        .withIndex("by_session", (q) => q.eq("sales_session_id", session._id))
-        .filter((q) => q.and(
+        .withIndex("by_session", (q: any) => q.eq("sales_session_id", session._id))
+        .filter((q: any) => q.and(
           q.eq(q.field("seller_id"), seller_id),
           q.eq(q.field("item_id"), item_id)
         ))
@@ -1581,8 +1741,8 @@ async function recalculateAllSellerTransactionsFromDate(ctx: any, seller_id: str
       // Also process any standalone seller payments for this session date
       const payments = await ctx.db
         .query("seller_payments")
-        .withIndex("by_date", (q) => q.eq("payment_date", session.session_date))
-        .filter((q) => q.and(
+        .withIndex("by_date", (q: any) => q.eq("payment_date", session.session_date))
+        .filter((q: any) => q.and(
           q.eq(q.field("seller_id"), seller_id),
           q.eq(q.field("item_id"), item_id)
         ))
@@ -1599,7 +1759,7 @@ async function recalculateAllSellerTransactionsFromDate(ctx: any, seller_id: str
 
   } catch (error) {
     console.error("Error in recalculateAllSellerTransactionsFromDate:", error);
-    throw new Error(`Failed to recalculate seller transactions: ${error.message}`);
+    throw new Error(`Failed to recalculate seller transactions: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -1645,7 +1805,7 @@ export const deleteSellerOpeningBalance = mutation({
 
     } catch (error) {
       console.error("deleteSellerOpeningBalance error:", error);
-      throw new Error(`Failed to delete seller opening balance: ${error.message}`);
+      throw new Error(`Failed to delete seller opening balance: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 });
@@ -1689,7 +1849,7 @@ export const deleteSupplierOpeningBalance = mutation({
 
     } catch (error) {
       console.error("deleteSupplierOpeningBalance error:", error);
-      throw new Error(`Failed to delete supplier opening balance: ${error.message}`);
+      throw new Error(`Failed to delete supplier opening balance: ${error instanceof Error ? error.message : String(error)}`);
     }
   },
 });
@@ -1850,33 +2010,33 @@ async function calculateCorrectSellerOutstanding(ctx: any, seller_id: string, it
   // Get opening balance
   const openingBalance = await ctx.db
     .query("seller_opening_balances")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .first();
 
   // Get all sales entries
   const salesEntries = await ctx.db
     .query("sales_entries")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .collect();
 
   // Get all standalone payments
   const payments = await ctx.db
     .query("seller_payments")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .collect();
 
   // Calculate totals according to business logic
   const openingPayment = openingBalance?.opening_payment_due || 0;
   const openingQuantity = openingBalance?.opening_quantity_due || 0;
 
-  const totalPurchases = salesEntries.reduce((sum, entry) => sum + entry.total_amount_purchased, 0);
-  const totalQuantityPurchased = salesEntries.reduce((sum, entry) => sum + entry.total_quantity_purchased, 0);
-  const totalPaid = salesEntries.reduce((sum, entry) => sum + entry.amount_paid, 0);
-  const totalDiscount = salesEntries.reduce((sum, entry) => sum + entry.less_discount, 0);
-  const totalCratesReturned = salesEntries.reduce((sum, entry) => sum + entry.crates_returned, 0);
+  const totalPurchases = salesEntries.reduce((sum: number, entry: any) => sum + entry.total_amount_purchased, 0);
+  const totalQuantityPurchased = salesEntries.reduce((sum: number, entry: any) => sum + entry.total_quantity_purchased, 0);
+  const totalPaid = salesEntries.reduce((sum: number, entry: any) => sum + entry.amount_paid, 0);
+  const totalDiscount = salesEntries.reduce((sum: number, entry: any) => sum + entry.less_discount, 0);
+  const totalCratesReturned = salesEntries.reduce((sum: number, entry: any) => sum + entry.crates_returned, 0);
 
-  const totalStandalonePayments = payments.reduce((sum, payment) => sum + payment.amount_received, 0);
-  const totalStandaloneReturns = payments.reduce((sum, payment) => sum + payment.crates_returned, 0);
+  const totalStandalonePayments = payments.reduce((sum: number, payment: any) => sum + payment.amount_received, 0);
+  const totalStandaloneReturns = payments.reduce((sum: number, payment: any) => sum + payment.crates_returned, 0);
 
   const finalPayment = openingPayment + totalPurchases - totalPaid - totalDiscount - totalStandalonePayments;
   const finalQuantity = openingQuantity + totalQuantityPurchased - totalCratesReturned - totalStandaloneReturns;
@@ -1889,27 +2049,27 @@ async function calculateCorrectSupplierOutstanding(ctx: any, supplier_id: string
   // Get opening balance
   const openingBalance = await ctx.db
     .query("supplier_opening_balances")
-    .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+    .withIndex("by_supplier_item", (q: any) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
     .first();
 
   // Get all procurement entries
   const allEntries = await ctx.db.query("procurement_entries").collect();
-  const procurementEntries = allEntries.filter((e) => e.supplier_id === supplier_id && e.item_id === item_id);
+  const procurementEntries = allEntries.filter((e: any) => e.supplier_id === supplier_id && e.item_id === item_id);
 
   // Get all payments
   const payments = await ctx.db
     .query("supplier_payments")
-    .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+    .withIndex("by_supplier_item", (q: any) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
     .collect();
 
   // Calculate totals according to business logic
   const openingPayment = openingBalance?.opening_payment_due || 0;
   const openingQuantity = openingBalance?.opening_quantity_due || 0;
 
-  const totalProcurement = procurementEntries.reduce((sum, entry) => sum + entry.total_amount, 0);
-  const totalQuantityPurchased = procurementEntries.reduce((sum, entry) => sum + entry.quantity, 0);
-  const totalPaid = payments.reduce((sum, payment) => sum + payment.amount_paid, 0);
-  const totalCratesReturned = payments.reduce((sum, payment) => sum + payment.crates_returned, 0);
+  const totalProcurement = procurementEntries.reduce((sum: number, entry: any) => sum + entry.total_amount, 0);
+  const totalQuantityPurchased = procurementEntries.reduce((sum: number, entry: any) => sum + entry.quantity, 0);
+  const totalPaid = payments.reduce((sum: number, payment: any) => sum + payment.amount_paid, 0);
+  const totalCratesReturned = payments.reduce((sum: number, payment: any) => sum + payment.crates_returned, 0);
 
   const finalPayment = openingPayment + totalProcurement - totalPaid;
   const finalQuantity = openingQuantity + totalQuantityPurchased - totalCratesReturned;
@@ -1926,61 +2086,145 @@ export const deleteEntry = mutation({
   },
   handler: async (ctx, args) => {
     const { entryType, entryId, forceDelete = false } = args;
+    console.log(`🗑️ deleteEntry called: type=${entryType}, id=${entryId}, force=${forceDelete}`);
 
     try {
       if (entryType === "procurement") {
+        console.log("🔍 Getting procurement entry...");
         // Get the procurement entry first to ensure it exists
-        const procurementEntry = await ctx.db.get(entryId as Id<"procurement_entries">);
+        const procurementEntry: any = await ctx.db.get(entryId as Id<"procurement_entries">);
         if (!procurementEntry) {
           throw new Error("Procurement entry not found");
         }
+        console.log("✅ Procurement entry found:", procurementEntry);
 
-        // Directly call the deletion logic from deleteProcurementEntry
-        console.log(`Starting deletion of procurement entry: ${entryId}`);
-
+        console.log("🔍 Getting session...");
         // Get the session to find the date
-        const session = await ctx.db.get(procurementEntry.procurement_session_id);
+        const session: any = await ctx.db.get(procurementEntry.procurement_session_id);
         if (!session) {
           throw new Error("Procurement session not found");
         }
+        console.log("✅ Session found:", session);
 
         const sessionDate = session.session_date;
         const { supplier_id, item_id, quantity, total_amount } = procurementEntry;
 
+        console.log("🗑️ Deleting procurement entry...");
         // Delete the procurement entry
         await ctx.db.delete(entryId as Id<"procurement_entries">);
+        console.log("✅ Procurement entry deleted");
 
+        console.log("📦 Updating inventory after deletion...");
         // Update inventory - reduce current stock
         await updateInventoryAfterDeletion(ctx, item_id, procurementEntry.type_name, quantity);
+        console.log("✅ Inventory updated");
 
+        console.log("📊 Updating daily inventory...");
         // Update daily inventory for the session date
         await updateDailyInventoryAfterDeletion(ctx, sessionDate, item_id, procurementEntry.type_name, quantity);
+        console.log("✅ Daily inventory updated");
 
+        console.log("💰 Updating supplier outstanding...");
         // Update supplier outstanding - reduce what we owe
         await updateSupplierOutstandingAfterDeletion(ctx, supplier_id, item_id, total_amount, quantity);
+        console.log("✅ Supplier outstanding updated");
 
+        console.log("🧹 Cleaning up empty session...");
         // Clean up session if this was the last entry
         await cleanupEmptyProcurementSession(ctx, procurementEntry.procurement_session_id);
+        console.log("✅ Session cleanup completed");
 
+        console.log("🏷️ Deactivating item type if empty...");
         // Deactivate item type if no stock remains
         await deactivateItemTypeIfEmpty(ctx, item_id, procurementEntry.type_name);
+        console.log("✅ Item type check completed");
 
-        console.log(`Successfully deleted procurement entry: ${entryId}`);
+        console.log(`🎉 Successfully deleted procurement entry: ${entryId}`);
         return { success: true, message: "Procurement entry deleted successfully" };
 
       } else if (entryType === "sales") {
-        // For now, throw an error for sales entries - they need proper cascade implementation
-        throw new Error("Sales entry deletion not implemented yet. Please use the specific sales deletion function.");
+        console.log("🔍 Getting sales entry...");
+        // Get the sales entry
+        const salesEntry: any = await ctx.db.get(entryId as Id<"sales_entries">);
+        if (!salesEntry) {
+          throw new Error("Sales entry not found");
+        }
+        console.log("✅ Sales entry found:", salesEntry);
+
+        console.log("🔍 Getting sales session...");
+        // Get the session
+        const session: any = await ctx.db.get(salesEntry.sales_session_id);
+        if (!session) {
+          throw new Error("Sales session not found");
+        }
+        console.log("✅ Sales session found:", session);
+
+        console.log("🔍 Getting related line items...");
+        // Get all related line items
+        const lineItems = await ctx.db
+          .query("sales_line_items")
+          .withIndex("by_sales_entry", (q) => q.eq("sales_entry_id", entryId as Id<"sales_entries">))
+          .collect();
+        console.log(`✅ Found ${lineItems.length} line items to delete`);
+
+        console.log("🗑️ Deleting line items...");
+        // Delete all related line items first
+        for (const lineItem of lineItems) {
+          await ctx.db.delete(lineItem._id);
+        }
+        console.log("✅ Deleted all line items");
+
+        console.log("📦 Reversing inventory impact...");
+        // Reverse inventory impact for each line item (add back to stock)
+        for (const lineItem of lineItems) {
+          console.log(`Reversing ${lineItem.quantity} of ${lineItem.type_name}`);
+          await updateCurrentInventoryForSaleReversal(ctx, salesEntry.item_id, lineItem.type_name, lineItem.quantity);
+          await updateDailyInventoryForSaleReversal(ctx, session.session_date, salesEntry.item_id, lineItem.type_name, lineItem.quantity);
+        }
+        console.log("✅ Inventory impact reversed");
+
+        console.log("🗑️ Deleting sales entry...");
+        // Delete the sales entry
+        await ctx.db.delete(entryId as Id<"sales_entries">);
+        console.log("✅ Sales entry deleted");
+
+        console.log("� Recalculating ALL subsequent seller transactions...");
+        // **CRITICAL CASCADE REQUIREMENT**: Recalculate ALL subsequent entries for this seller+item
+        // This ensures that all future transactions have correct running balances after this deletion
+        await recalculateAllSellerTransactionsFromDate(ctx, salesEntry.seller_id, salesEntry.item_id, session.session_date);
+        console.log("✅ All subsequent seller transactions recalculated");
+
+        console.log("�💰 Recalculating seller outstanding...");
+        // Recalculate seller outstanding balance
+        await recalculateSellerOutstanding(ctx, salesEntry.seller_id, salesEntry.item_id);
+        console.log("✅ Seller outstanding recalculated");
+
+        console.log("🧹 Cleaning up empty sales session...");
+        // Check if session is now empty and delete if so
+        const remainingSalesEntries = await ctx.db
+          .query("sales_entries")
+          .withIndex("by_session", (q) => q.eq("sales_session_id", salesEntry.sales_session_id))
+          .collect();
+
+        if (remainingSalesEntries.length === 0) {
+          await ctx.db.delete(salesEntry.sales_session_id);
+          console.log("✅ Deleted empty sales session");
+        } else {
+          console.log("✅ Session has remaining entries, keeping it");
+        }
+
+        console.log(`🎉 Successfully deleted sales entry with complete cascade recalculation: ${entryId}`);
+        return { success: true, message: "Sales entry deleted successfully with all subsequent entries recalculated" };
 
       } else if (entryType === "payment") {
-        // For now, throw an error for payment entries - they need proper cascade implementation
         throw new Error("Payment entry deletion not implemented yet. Please use the specific payment deletion functions.");
       }
 
       throw new Error(`Unsupported entry type: ${entryType}`);
     } catch (error: any) {
-      console.error(`Error deleting ${entryType} entry:`, error);
-      throw new Error(`Failed to delete ${entryType} entry: ${error.message}`);
+      console.error(`❌ Error deleting ${entryType} entry:`, error);
+      console.error("❌ Error stack:", error.stack);
+      throw error; // Re-throw the original error for better debugging
     }
   },
 });
@@ -1991,7 +2235,7 @@ async function updateInventoryAfterDeletion(ctx: any, item_id: string, type_name
   // Update current inventory - reduce stock
   const currentInventory = await ctx.db
     .query("current_inventory")
-    .withIndex("by_item_type", (q) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .withIndex("by_item_type", (q: any) => q.eq("item_id", item_id).eq("type_name", type_name))
     .first();
 
   if (currentInventory) {
@@ -2007,8 +2251,8 @@ async function updateDailyInventoryAfterDeletion(ctx: any, sessionDate: string, 
   // Update daily inventory for the session date
   const dailyInventory = await ctx.db
     .query("daily_inventory")
-    .withIndex("by_date_item", (q) => q.eq("inventory_date", sessionDate).eq("item_id", item_id))
-    .filter((q) => q.eq(q.field("type_name"), type_name))
+    .withIndex("by_date_item", (q: any) => q.eq("inventory_date", sessionDate).eq("item_id", item_id))
+    .filter((q: any) => q.eq(q.field("type_name"), type_name))
     .first();
 
   if (dailyInventory) {
@@ -2026,7 +2270,7 @@ async function updateSupplierOutstandingAfterDeletion(ctx: any, supplier_id: str
   // Update supplier outstanding - reduce what we owe
   const outstanding = await ctx.db
     .query("supplier_outstanding")
-    .withIndex("by_supplier_item", (q) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
+    .withIndex("by_supplier_item", (q: any) => q.eq("supplier_id", supplier_id).eq("item_id", item_id))
     .first();
 
   if (outstanding) {
@@ -2045,7 +2289,7 @@ async function cleanupEmptyProcurementSession(ctx: any, sessionId: string) {
   // Check if there are any remaining entries in this session
   const remainingEntries = await ctx.db
     .query("procurement_entries")
-    .withIndex("by_session", (q) => q.eq("procurement_session_id", sessionId))
+    .withIndex("by_session", (q: any) => q.eq("procurement_session_id", sessionId))
     .collect();
 
   // If no entries remain, delete the session
@@ -2059,14 +2303,14 @@ async function deactivateItemTypeIfEmpty(ctx: any, item_id: string, type_name: s
   // Check if there's any stock remaining for this item type
   const currentInventory = await ctx.db
     .query("current_inventory")
-    .withIndex("by_item_type", (q) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .withIndex("by_item_type", (q: any) => q.eq("item_id", item_id).eq("type_name", type_name))
     .first();
 
   // If no stock remains, mark the item type as inactive
   if (!currentInventory || currentInventory.current_stock <= 0) {
     const itemType = await ctx.db
       .query("item_types")
-      .withIndex("by_item_type", (q) => q.eq("item_id", item_id).eq("type_name", type_name))
+      .withIndex("by_item_type", (q: any) => q.eq("item_id", item_id).eq("type_name", type_name))
       .first();
 
     if (itemType && itemType.is_active) {
@@ -2076,6 +2320,92 @@ async function deactivateItemTypeIfEmpty(ctx: any, item_id: string, type_name: s
       });
       console.log(`Deactivated item type: ${item_id} - ${type_name}`);
     }
+  }
+}
+
+// Helper function to reverse inventory impact for sales (add back to stock)
+async function updateCurrentInventoryForSaleReversal(ctx: any, item_id: string, type_name: string, quantity: number) {
+  console.log(`Reversing current inventory: adding back ${quantity} of ${type_name}`);
+
+  const existing = await ctx.db
+    .query("current_inventory")
+    .withIndex("by_item_type", (q: any) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .first();
+
+  if (existing) {
+    const newStock = existing.current_stock + quantity; // Add back the quantity
+    await ctx.db.patch(existing._id, {
+      current_stock: newStock,
+      last_updated: new Date().toISOString().split("T")[0],
+    });
+    console.log(`Current inventory updated: ${existing.current_stock} + ${quantity} = ${newStock}`);
+  }
+}
+
+// Helper function to reverse daily inventory impact for sales
+async function updateDailyInventoryForSaleReversal(ctx: any, sessionDate: string, item_id: string, type_name: string, quantity: number) {
+  console.log(`Reversing daily inventory for ${sessionDate}: reducing sold_today by ${quantity}`);
+
+  const existing = await ctx.db
+    .query("daily_inventory")
+    .withIndex("by_date_item", (q: any) => q.eq("inventory_date", sessionDate).eq("item_id", item_id))
+    .filter((q: any) => q.eq(q.field("type_name"), type_name))
+    .first();
+
+  if (existing) {
+    const newSoldToday = Math.max(0, existing.sold_today - quantity); // Reduce sold quantity
+    const newClosingStock = existing.opening_stock + existing.purchased_today - newSoldToday;
+
+    await ctx.db.patch(existing._id, {
+      sold_today: newSoldToday,
+      closing_stock: newClosingStock,
+    });
+    console.log(`Daily inventory updated: sold_today ${existing.sold_today} - ${quantity} = ${newSoldToday}, closing_stock = ${newClosingStock}`);
+  }
+}
+
+// Helper function to update current inventory for sales (reduce stock)
+async function updateCurrentInventoryForSale(ctx: any, item_id: string, type_name: string, quantity: number) {
+  console.log(`Updating current inventory: reducing by ${quantity} of ${type_name}`);
+
+  const existing = await ctx.db
+    .query("current_inventory")
+    .withIndex("by_item_type", (q: any) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .first();
+
+  if (existing) {
+    const newStock = Math.max(0, existing.current_stock - quantity);
+    await ctx.db.patch(existing._id, {
+      current_stock: newStock,
+      last_updated: new Date().toISOString().split("T")[0],
+    });
+    console.log(`Current inventory updated: ${existing.current_stock} - ${quantity} = ${newStock}`);
+  }
+}
+
+// Helper function to update daily inventory for sales
+async function updateInventoryForSale(ctx: any, sales_session_id: string, item_id: string, type_name: string, quantity: number) {
+  console.log(`Updating daily inventory: increasing sold_today by ${quantity}`);
+
+  // Get session to find the date
+  const session = await ctx.db.get(sales_session_id);
+  if (!session) return;
+
+  const existing = await ctx.db
+    .query("daily_inventory")
+    .withIndex("by_date_item", (q: any) => q.eq("inventory_date", session.session_date).eq("item_id", item_id))
+    .filter((q: any) => q.eq(q.field("type_name"), type_name))
+    .first();
+
+  if (existing) {
+    const newSoldToday = existing.sold_today + quantity;
+    const newClosingStock = existing.opening_stock + existing.purchased_today - newSoldToday;
+
+    await ctx.db.patch(existing._id, {
+      sold_today: newSoldToday,
+      closing_stock: Math.max(0, newClosingStock),
+    });
+    console.log(`Daily inventory updated: sold_today ${existing.sold_today} + ${quantity} = ${newSoldToday}, closing_stock = ${newClosingStock}`);
   }
 }
 

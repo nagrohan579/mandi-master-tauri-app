@@ -305,6 +305,7 @@ export function SalesEntryPage() {
       toast({
         title: "Success",
         description: "New seller added successfully",
+        variant: "success",
       });
     } catch (error) {
       toast({
@@ -410,6 +411,7 @@ export function SalesEntryPage() {
       toast({
         title: "Success",
         description: `${personEntries.length} sales entries saved successfully`,
+        variant: "success",
       });
 
     } catch (error) {

@@ -104,7 +104,7 @@ async function updateCurrentInventoryForSale(ctx: any, item_id: string, type_nam
 
   const existing = await ctx.db
     .query("current_inventory")
-    .withIndex("by_item_type", (q) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .withIndex("by_item_type", (q: any) => q.eq("item_id", item_id).eq("type_name", type_name))
     .first();
 
   if (existing) {
@@ -124,13 +124,13 @@ async function getPreviousOutstanding(ctx: any, seller_id: string, item_id: stri
   // Get opening balance
   const openingBalance = await ctx.db
     .query("seller_opening_balances")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .first();
 
   // Get current outstanding
   const currentOutstanding = await ctx.db
     .query("seller_outstanding")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .first();
 
   if (currentOutstanding) {
@@ -154,7 +154,7 @@ async function updateSellerOutstanding(ctx: any, seller_id: string, item_id: str
 
   const existing = await ctx.db
     .query("seller_outstanding")
-    .withIndex("by_seller_item", (q) => q.eq("seller_id", seller_id).eq("item_id", item_id))
+    .withIndex("by_seller_item", (q: any) => q.eq("seller_id", seller_id).eq("item_id", item_id))
     .first();
 
   if (existing) {
@@ -185,8 +185,8 @@ async function getOpeningStockForSales(ctx: any, date: string, item_id: string, 
 
     const inventory = await ctx.db
       .query("daily_inventory")
-      .withIndex("by_date_item", (q) => q.eq("inventory_date", checkDateStr).eq("item_id", item_id))
-      .filter((q) => q.eq(q.field("type_name"), type_name))
+      .withIndex("by_date_item", (q: any) => q.eq("inventory_date", checkDateStr).eq("item_id", item_id))
+      .filter((q: any) => q.eq(q.field("type_name"), type_name))
       .first();
 
     if (inventory && inventory.closing_stock > 0) {
@@ -208,8 +208,8 @@ async function updateInventoryForSale(ctx: any, sales_session_id: string, item_i
 
   const existing = await ctx.db
     .query("daily_inventory")
-    .withIndex("by_date_item", (q) => q.eq("inventory_date", session.session_date).eq("item_id", item_id))
-    .filter((q) => q.eq(q.field("type_name"), type_name))
+    .withIndex("by_date_item", (q: any) => q.eq("inventory_date", session.session_date).eq("item_id", item_id))
+    .filter((q: any) => q.eq(q.field("type_name"), type_name))
     .first();
 
   if (existing) {
@@ -252,12 +252,12 @@ export const getSalesEntries = query({
     if (args.session_id) {
       return await ctx.db
         .query("sales_entries")
-        .withIndex("by_session", (q) => q.eq("sales_session_id", args.session_id))
+        .withIndex("by_session", (q: any) => q.eq("sales_session_id", args.session_id!))
         .collect();
     } else if (args.seller_id) {
       return await ctx.db
         .query("sales_entries")
-        .withIndex("by_seller", (q) => q.eq("seller_id", args.seller_id))
+        .withIndex("by_seller", (q: any) => q.eq("seller_id", args.seller_id!))
         .order("desc")
         .take(10);
     } else {
@@ -300,7 +300,7 @@ export const getTodaysSales = query({
       .collect();
 
     // Enrich with seller and item names
-    const enrichedEntries = [];
+    const enrichedEntries: any[] = [];
     for (const entry of entries) {
       const seller = await ctx.db.get(entry.seller_id);
       const item = await ctx.db.get(entry.item_id);
@@ -351,15 +351,48 @@ export const getAvailableStock = query({
       .filter((q) => q.gt(q.field("closing_stock"), 0))
       .collect();
 
-    if (historicalStock.length > 0) {
-      return historicalStock.map(stock => ({
+    // Collect type names that have explicit records for this date
+    const typesWithRecords = new Set(historicalStock.map(stock => stock.type_name));
+
+    // Get all active types for this item from item_types table
+    const allItemTypes = await ctx.db
+      .query("item_types")
+      .withIndex("by_item", (q) => q.eq("item_id", args.item_id))
+      .filter((q) => q.eq(q.field("is_active"), true))
+      .collect();
+
+    // For each type that doesn't have a record on this date, try carry-forward
+    const carriedForwardStock: any[] = [];
+    for (const itemType of allItemTypes) {
+      if (!typesWithRecords.has(itemType.type_name)) {
+        // Check if this type had stock on previous days
+        const carriedStock = await getCarriedForwardStockForType(
+          ctx, 
+          args.item_id, 
+          itemType.type_name, 
+          requestedDate
+        );
+        if (carriedStock) {
+          carriedForwardStock.push(carriedStock);
+        }
+      }
+    }
+
+    // Combine explicit records with carried-forward stock
+    const combinedStock = [
+      ...historicalStock.map(stock => ({
         type_name: stock.type_name,
         closing_stock: stock.closing_stock,
         weighted_avg_purchase_rate: stock.weighted_avg_purchase_rate,
         is_carried_forward: false,
         carried_from_date: args.date,
         days_carried: 0
-      }));
+      })),
+      ...carriedForwardStock
+    ];
+
+    if (combinedStock.length > 0) {
+      return combinedStock;
     }
 
     // If no exact date match, try carry-forward logic for past dates only
@@ -383,12 +416,12 @@ async function getCarriedForwardStock(ctx: any, item_id: string, date: string, m
 
     const inventory = await ctx.db
       .query("daily_inventory")
-      .withIndex("by_date_item", (q) => q.eq("inventory_date", checkDateStr).eq("item_id", item_id))
-      .filter((q) => q.gt(q.field("closing_stock"), 0))
+      .withIndex("by_date_item", (q: any) => q.eq("inventory_date", checkDateStr).eq("item_id", item_id))
+      .filter((q: any) => q.gt(q.field("closing_stock"), 0))
       .collect();
 
     if (inventory.length > 0) {
-      return inventory.map(stock => ({
+      return inventory.map((stock: any) => ({
         type_name: stock.type_name,
         closing_stock: stock.closing_stock,
         weighted_avg_purchase_rate: stock.weighted_avg_purchase_rate,
@@ -401,3 +434,79 @@ async function getCarriedForwardStock(ctx: any, item_id: string, date: string, m
 
   return [];
 }
+
+// Helper function to get carried-forward stock for a specific type
+async function getCarriedForwardStockForType(ctx: any, item_id: string, type_name: string, date: string, maxDaysBack: number = 30) {
+  const targetDateTime = new Date(date);
+
+  for (let daysBack = 1; daysBack <= maxDaysBack; daysBack++) {
+    const checkDate = new Date(targetDateTime);
+    checkDate.setDate(checkDate.getDate() - daysBack);
+    const checkDateStr = checkDate.toISOString().split('T')[0];
+
+    const inventory = await ctx.db
+      .query("daily_inventory")
+      .withIndex("by_date_item", (q: any) => q.eq("inventory_date", checkDateStr).eq("item_id", item_id))
+      .filter((q: any) => q.eq(q.field("type_name"), type_name))
+      .first();
+
+    if (inventory && inventory.closing_stock > 0) {
+      return {
+        type_name: inventory.type_name,
+        closing_stock: inventory.closing_stock,
+        weighted_avg_purchase_rate: inventory.weighted_avg_purchase_rate,
+        is_carried_forward: true,
+        carried_from_date: checkDateStr,
+        days_carried: daysBack
+      };
+    }
+  }
+
+  return null;
+}
+
+// Helper function to reverse current inventory for sales (used during updates)
+async function updateCurrentInventoryForSaleReversal(ctx: any, item_id: string, type_name: string, quantity: number) {
+  const currentDate = new Date().toISOString().split("T")[0];
+
+  const existing = await ctx.db
+    .query("current_inventory")
+    .withIndex("by_item_type", (q: any) => q.eq("item_id", item_id).eq("type_name", type_name))
+    .first();
+
+  if (existing) {
+    // Add back the quantity that was previously sold
+    const newStock = existing.current_stock + quantity;
+
+    await ctx.db.patch(existing._id, {
+      current_stock: newStock,
+      last_updated: currentDate,
+    });
+  }
+}
+
+// Helper function to reverse daily inventory for sales (used during updates)
+async function updateDailyInventoryForSaleReversal(ctx: any, date: string, item_id: string, type_name: string, quantity: number) {
+  const existing = await ctx.db
+    .query("daily_inventory")
+    .withIndex("by_date_item", (q: any) => q.eq("inventory_date", date).eq("item_id", item_id))
+    .filter((q: any) => q.eq(q.field("type_name"), type_name))
+    .first();
+
+  if (existing) {
+    // Reduce sold_today and increase closing_stock
+    const newSold = Math.max(0, existing.sold_today - quantity);
+    const newClosing = existing.opening_stock + existing.purchased_today - newSold;
+
+    await ctx.db.patch(existing._id, {
+      sold_today: newSold,
+      closing_stock: Math.max(0, newClosing),
+    });
+  }
+}
+
+// Export unused functions to avoid lint errors (may be used in future for entry updates/deletions)
+export const _unusedHelpers = {
+  updateCurrentInventoryForSaleReversal,
+  updateDailyInventoryForSaleReversal,
+};

@@ -16,7 +16,7 @@ import { useToast } from "@/hooks/use-toast";
 import { formatDateForIndia } from "@/lib/utils";
 import { api } from "../../convex/_generated/api";
 
-type EntryType = "procurement" | "sales" | "payments";
+type EntryType = "procurement" | "seller" | "supplier_settlement";
 
 interface SearchFilters {
   entryType: EntryType;
@@ -82,7 +82,7 @@ export function DeleteEntriesPage() {
 
   const salesResults = useQuery(
     api.entryManagement.searchSalesEntries,
-    searchParams && filters.entryType === "sales" && searchParams.startDate && searchParams.endDate ? {
+    searchParams && filters.entryType === "seller" && searchParams.startDate && searchParams.endDate ? {
       startDate: searchParams.startDate,
       endDate: searchParams.endDate,
       ...(searchParams.sellerId && { sellerId: searchParams.sellerId }),
@@ -91,8 +91,8 @@ export function DeleteEntriesPage() {
   );
 
   const paymentResults = useQuery(
-    api.entryManagement.searchPaymentEntries,
-    searchParams && filters.entryType === "payments" && searchParams.startDate && searchParams.endDate ? {
+    api.entryManagement.searchSupplierSettlementEntries,
+    searchParams && filters.entryType === "supplier_settlement" && searchParams.startDate && searchParams.endDate ? {
       startDate: searchParams.startDate,
       endDate: searchParams.endDate,
       ...(searchParams.itemId && { itemId: searchParams.itemId }),
@@ -117,7 +117,7 @@ export function DeleteEntriesPage() {
       setIsSearching(true);
 
       const results = filters.entryType === "procurement" ? procurementResults :
-                     filters.entryType === "sales" ? salesResults : paymentResults;
+                     filters.entryType === "seller" ? salesResults : paymentResults;
 
       if (results && Array.isArray(results)) {
         console.log('DeleteEntriesPage: Setting results', results.length, 'entries');
@@ -154,7 +154,7 @@ export function DeleteEntriesPage() {
           setImpactAnalysis(new Map());
           setIsSearching(false);
         }
-      } else if (results === null || (Array.isArray(results) && results.length === 0)) {
+      } else {
         console.log('DeleteEntriesPage: No results found');
         setSearchResults([]);
         setImpactAnalysis(new Map());
@@ -228,16 +228,16 @@ export function DeleteEntriesPage() {
         };
         console.log('DeleteEntriesPage: Setting procurement search params', params);
         setSearchParams(params);
-      } else if (filters.entryType === "sales") {
+      } else if (filters.entryType === "seller") {
         const params = {
           startDate: startDateStr,
           endDate: endDateStr,
           sellerId: filters.sellerId !== "all" ? filters.sellerId : null,
           itemId: filters.itemId !== "all" ? filters.itemId : null,
         };
-        console.log('DeleteEntriesPage: Setting sales search params', params);
+        console.log('DeleteEntriesPage: Setting seller search params', params);
         setSearchParams(params);
-      } else if (filters.entryType === "payments") {
+      } else if (filters.entryType === "supplier_settlement") {
         const params = {
           startDate: startDateStr,
           endDate: endDateStr,
@@ -286,25 +286,35 @@ export function DeleteEntriesPage() {
 
     try {
       await deleteEntry({
-        entryType: filters.entryType,
+        entryType: filters.entryType === "seller" ? "sales" :
+                   filters.entryType === "supplier_settlement" ? "payment" :
+                   filters.entryType,
         entryId: deletingEntry._id,
         forceDelete: false,
       });
 
-      // Remove from results
-      setSearchResults(prev => prev.filter(e => e._id !== deletingEntry._id));
-      setImpactAnalysis(prev => {
-        const newMap = new Map(prev);
-        newMap.delete(deletingEntry._id);
-        return newMap;
+      // Show success toast
+      toast({
+        title: "✅ Success",
+        description: "Entry deleted successfully",
+        variant: "default",
+        duration: 2000,
       });
 
+      // Close modal
       setIsConfirmModalOpen(false);
       setDeletingEntry(null);
-      alert("Entry deleted successfully!");
+      
+      // Trigger automatic re-search to refresh the list with updated data
+      handleSearch();
     } catch (error) {
       console.error("Error deleting entry:", error);
-      alert("Error deleting entry. Please try again.");
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete entry",
+        variant: "destructive",
+        duration: 3000,
+      });
     }
   };
 
@@ -386,8 +396,8 @@ export function DeleteEntriesPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="procurement">Procurement Entries</SelectItem>
-                <SelectItem value="sales">Sales Entries</SelectItem>
-                <SelectItem value="payments">Payment Entries</SelectItem>
+                <SelectItem value="seller">Seller Entries</SelectItem>
+                <SelectItem value="supplier_settlement">Supplier Settlement Entries</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -445,7 +455,7 @@ export function DeleteEntriesPage() {
             </div>
           )}
 
-          {filters.entryType === "sales" && (
+          {filters.entryType === "seller" && (
             <div className="space-y-2">
               <Label>Seller (Optional)</Label>
               <Select value={filters.sellerId} onValueChange={(value) => setFilters(prev => ({ ...prev, sellerId: value }))}>
@@ -645,7 +655,7 @@ export function DeleteEntriesPage() {
 
     return (
       <Dialog open={isConfirmModalOpen} onOpenChange={setIsConfirmModalOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="!max-w-[95vw] !w-[95vw] max-h-[90vh] overflow-y-auto sm:!max-w-3xl sm:!w-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center">
               <AlertTriangle className="w-5 h-5 mr-2 text-orange-600" />

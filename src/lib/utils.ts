@@ -6,20 +6,32 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 // Format date in Indian format (dd/mm/yyyy)
-export function formatDateForIndia(date: Date | string | number): string {
-  let dateObj: Date;
-
-  if (typeof date === 'string') {
-    dateObj = new Date(date);
-  } else if (typeof date === 'number') {
-    // Handle Unix timestamp (from Convex _creationTime)
-    dateObj = new Date(date);
-  } else {
-    dateObj = date;
+export function formatDateForIndia(date: Date | string | number | undefined | null): string {
+  // Handle null/undefined inputs
+  if (!date) {
+    return '';
   }
 
-  // Handle invalid dates
-  if (isNaN(dateObj.getTime())) {
+  let dateObj: Date;
+
+  try {
+    if (typeof date === 'string') {
+      dateObj = new Date(date);
+    } else if (typeof date === 'number') {
+      // Handle Unix timestamp (from Convex _creationTime)
+      dateObj = new Date(date);
+    } else if (date instanceof Date) {
+      dateObj = date;
+    } else {
+      return '';
+    }
+
+    // Handle invalid dates
+    if (!dateObj || isNaN(dateObj.getTime())) {
+      return '';
+    }
+  } catch (error) {
+    console.error('Error in formatDateForIndia:', error);
     return '';
   }
 
